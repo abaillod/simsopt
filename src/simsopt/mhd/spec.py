@@ -49,6 +49,8 @@ from .._core.optimizable import Optimizable
 from .._core.util import ObjectiveFailure
 from ..geo.surfacerzfourier import SurfaceRZFourier
 from ..util.dev import SimsoptRequires
+from .SpecProfile import SpecProfile
+from .NormalField import NormalField
 if MPI is not None:
     from ..util.mpi import MpiPartition
 else:
@@ -156,6 +158,10 @@ class Spec(Optimizable):
                                          mpol=si.mpol,
                                          ntor=si.ntor)
 
+                                        
+
+        self.Ivolume = SpecProfile( si.nvol, si.lfreebound, 'Ivolume')
+
         # Transfer the boundary shape from fortran to the boundary
         # surface object:
         for m in range(si.mpol + 1):
@@ -166,7 +172,25 @@ class Spec(Optimizable):
                     self.boundary.rs[m, n + si.ntor] = si.rbs[n + si.mntor, m + si.mmpol]
                     self.boundary.zc[m, n + si.ntor] = si.zbc[n + si.mntor, m + si.mmpol]
 
-        self.depends_on = ["boundary"]
+        if( si.lfreebound==1 ):
+            self.NormalField = NormalField( nfp=si.nfp,
+                                            stellsym=stellsym,
+                                            mpol=si.mpol,
+                                            ntor=si.ntor)
+
+            # Transfer the Vnc, Vns shape from fortran to the NormalField object:
+            for m in range(si.mpol + 1):
+                for n in range(-si.ntor, si.ntor + 1):
+                    self.NormalField.vs[m, n + si.ntor] = si.vns[n + si.mntor, m + si.mmpol]
+                    if not stellsym:
+                        self.NormalField.vc[m, n + si.ntor] = si.vnc[n + si.mntor, m + si.mmpol]
+
+            self.depends_on = ["boundary", "Ivolume", "NormalField"]
+                        
+        else:
+            self.depends_on = ["boundary", "Ivolume"]
+
+
         self.need_to_run_code = True
         self.counter = -1
 
@@ -243,6 +267,17 @@ class Spec(Optimizable):
                     si.rbs[n + si.mntor, m + si.mmpol] = boundary_RZFourier.get_rs(m, n)
                     si.zbc[n + si.mntor, m + si.mmpol] = boundary_RZFourier.get_zc(m, n)
 
+        # Transfer Vns, Vnc from python to fortran
+        mpol_capped = np.min([self.NormalField.mpol, si.mmpol])
+        ntor_capped = np.min([self.NormalField.ntor, si.mntor])
+        if( si.lfreebound==1 ):
+            for m in range(mpol_capped + 1):
+                for n in range(-ntor_capped, ntor_capped + 1):
+                    si.vns[n + si.mntor, m + si.mmpol] = self.NormalField.get_vs(m, n)
+                    if not stellsym:
+                        si.vnc[n + si.mntor, m + si.mmpol] = self.NormalField.get_vc(m, n)
+
+
         # Set the coordinate axis using the lrzaxis=2 feature:
         si.lrzaxis = 2
         # lrzaxis=2 only seems to work if the axis is not already set
@@ -250,6 +285,10 @@ class Spec(Optimizable):
         si.rac[:] = 0.0
         si.zas[:] = 0.0
         si.zac[:] = 0.0
+
+        #Set volume current
+        si.ivolume[0:self.Ivolume.length] = self.Ivolume.get_dofs()
+        si.curtor = si.ivolume[-1] + np.sum(si.isurf)
 
         # Another possible way to initialize the coordinate axis: use
         # the m=0 modes of the boundary.
