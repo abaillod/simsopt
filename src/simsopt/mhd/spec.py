@@ -268,9 +268,10 @@ class Spec(Optimizable):
                     si.zbc[n + si.mntor, m + si.mmpol] = boundary_RZFourier.get_zc(m, n)
 
         # Transfer Vns, Vnc from python to fortran
-        mpol_capped = np.min([self.NormalField.mpol, si.mmpol])
-        ntor_capped = np.min([self.NormalField.ntor, si.mntor])
+
         if( si.lfreebound==1 ):
+            mpol_capped = np.min([self.NormalField.mpol, si.mmpol])
+            ntor_capped = np.min([self.NormalField.ntor, si.mntor])
             for m in range(mpol_capped + 1):
                 for n in range(-ntor_capped, ntor_capped + 1):
                     si.vns[n + si.mntor, m + si.mmpol] = self.NormalField.get_vs(m, n)
