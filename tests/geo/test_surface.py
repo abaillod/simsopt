@@ -2,6 +2,7 @@ import unittest
 import logging
 from pathlib import Path
 import numpy as np
+import os
 
 from simsopt._core.dofs import Dofs
 from simsopt._core.optimizable import make_optimizable
@@ -22,7 +23,8 @@ try:
 except ImportError:
     pyevtk_found = False
 
-# logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+# logging.basicConfig(level=logging.INFO)
 
 
 class SurfaceXYZFourierTests(unittest.TestCase):
@@ -110,7 +112,7 @@ class SurfaceXYZFourierTests(unittest.TestCase):
         Away from the quadrature points, the conversion is not lossless and this test verifies that the
         error is small.
 
-        Additionally, this test checks that the cross sectional angle is correct.        
+        Additionally, this test checks that the cross sectional angle is correct.
         """
         s = get_exact_surface()
         sRZ = s.to_RZFourier()
@@ -143,7 +145,7 @@ class SurfaceXYZFourierTests(unittest.TestCase):
     def test_cross_section_torus(self):
         """
         Test that the cross sectional area at a certain number of cross sections of a torus
-        is what it should be.  The cross sectional angles are chosen to test any degenerate 
+        is what it should be.  The cross sectional angles are chosen to test any degenerate
         cases of the bisection algorithm.
 
         Additionally, this test checks that the cross sectional angle is correct.
@@ -252,7 +254,7 @@ class SurfaceXYZFourierTests(unittest.TestCase):
 
     def test_aspect_ratio_compare_with_cross_sectional_computation(self):
         """
-        This test validates the VMEC aspect ratio computation in the Surface class by 
+        This test validates the VMEC aspect ratio computation in the Surface class by
         comparing with an approximation based on cross section computations.
         """
         s = get_exact_surface()
@@ -268,7 +270,7 @@ class SurfaceXYZFourierTests(unittest.TestCase):
             Z = cs[:, 2]
             Rp = fftpack.diff(R, period=1.)
             Zp = fftpack.diff(Z, period=1.)
-            ar = np.mean(Z*Rp) 
+            ar = np.mean(Z*Rp)
             cs_area[idx] = ar
 
         mean_cross_sectional_area = np.mean(cs_area)
@@ -361,8 +363,8 @@ class SurfaceRZFourierTests(unittest.TestCase):
 
         # Now try a nonaxisymmetric shape:
         s = SurfaceRZFourier(mpol=3, ntor=1)
-        s.rc[:, :] = [[100, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]] 
-        s.zs[:, :] = [[101, 102, 13], [14, 15, 16], [17, 18, 19], [20, 21, 22]] 
+        s.rc[:, :] = [[100, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]
+        s.zs[:, :] = [[101, 102, 13], [14, 15, 16], [17, 18, 19], [20, 21, 22]]
         dofs = s.get_dofs()
         self.assertEqual(dofs.shape, (21,))
         for j in range(21):
@@ -607,6 +609,57 @@ class SurfaceRZFourierTests(unittest.TestCase):
         self.assertAlmostEqual(s.area(), true_area, places=4)
         self.assertAlmostEqual(s.volume(), true_volume, places=3)
 
+    def test_plot(self):
+        """
+        Test the plot() function for surfaces. The ``show`` argument is
+        set to ``False`` so the tests do not require human
+        intervention to close plot windows.  However, if you do want
+        to actually display the figure, you can change ``show`` to
+        ``True`` in the first line of this function.
+        """
+        show = False
+
+        engines = []
+        try:
+            import matplotlib
+        except ImportError:
+            pass
+        else:
+            engines.append("matplotlib")
+
+        try:
+            import mayavi
+        except ImportError:
+            pass
+        else:
+            engines.append("mayavi")
+
+        try:
+            import plotly
+        except ImportError:
+            pass
+        else:
+            engines.append("plotly")
+
+        print(f'Testing these plotting engines: {engines}')
+        filename1 = TEST_DIR / 'input.li383_low_res'
+        surf1 = SurfaceRZFourier.from_vmec_input(filename1)
+        filename2 = TEST_DIR / 'input.NuhrenbergZille_1988_QHS'
+        surf2 = SurfaceRZFourier.from_vmec_input(filename2)
+        for engine in engines:
+            for close in [True, False]:
+                # Plot a single surface, passing arguments appropriate for the graphics engine:
+                if engine == 'plotly':
+                    surf1.plot(engine=engine, close=close, show=show, wireframe=True,
+                               colorscale=[[0, 'red'], [1, 'blue']])
+                else:
+                    surf1.plot(engine=engine, close=close, show=show, color=(0.9, 0.2, 0.3))
+
+                # Plot 2 surfaces together:
+                ax = surf2.plot(engine=engine, show=False, close=close)
+                surf1.plot(engine=engine, ax=ax, plot_normal=True,
+                           plot_derivative=True, wireframe=True, show=show, close=close)
+
     def test_derivatives(self):
         """
         Check the automatic differentiation for area and volume.
@@ -726,6 +779,80 @@ class SurfaceGarabedianTests(unittest.TestCase):
                     sf2 = sg.to_RZFourier()
                     np.testing.assert_allclose(sf1.rc, sf2.rc)
                     np.testing.assert_allclose(sf1.zs, sf2.zs)
+
+
+class ArclengthTests(unittest.TestCase):
+    def test_arclength_poloidal_angle(self):
+        """
+        Compute arclength poloidal angle from circular cross-section tokamak.
+        Check that this matches parameterization angle.
+        Check that arclength_poloidal_angle is in [0,1] for both circular
+            cross-section tokamak and rotating ellipse boundary.
+        """
+        s = get_surface('SurfaceRZFourier', True, mpol=1, ntor=0,
+                        ntheta=200, nphi=5, full=True)
+        s.rc[0, 0] = 5.
+        s.rc[1, 0] = 1.5
+        s.zs[1, 0] = 1.5
+
+        theta1D = s.quadpoints_theta
+
+        arclength = s.arclength_poloidal_angle()
+        nphi = len(arclength[:, 0])
+        for iphi in range(nphi):
+            np.testing.assert_allclose(arclength[iphi, :], theta1D, atol=1e-3)
+            self.assertTrue(np.all(arclength[iphi, :] >= 0))
+            self.assertTrue(np.all(arclength[iphi, :] <= 1))
+
+        s = get_surface('SurfaceRZFourier', True, mpol=2, ntor=2,
+                        ntheta=20, nphi=20, full=True)
+        s.rc[0, 0] = 5.
+        s.rc[1, 0] = -1.5
+        s.rc[1, 1] = -0.5
+        s.rc[0, 1] = -0.5
+        s.zs[1, 1] = 0.5
+        s.zs[1, 0] = -1.5
+        s.zs[0, 1] = 0.5
+
+        theta1D = s.quadpoints_theta
+
+        arclength = s.arclength_poloidal_angle()
+        nphi = len(arclength[:, 0])
+        for iphi in range(nphi):
+            self.assertTrue(np.all(arclength[iphi, :] >= 0))
+            self.assertTrue(np.all(arclength[iphi, :] <= 1))
+
+    def test_interpolate_on_arclength_grid(self):
+        """
+        Check that line integral of (1 + cos(theta - phi)) at constant phi is
+        unchanged when evaluated on parameterization or arclength poloidal angle
+        grid.
+        """
+        ntheta = 500
+        nphi = 10
+        s = get_surface('SurfaceRZFourier', True, mpol=5, ntor=5,
+                        ntheta=ntheta, nphi=nphi, full=True)
+        s.rc[0, 0] = 5.
+        s.rc[1, 0] = -1.5
+        s.zs[1, 0] = -1.5
+        s.rc[1, 1] = -0.5
+        s.zs[1, 1] = 0.5
+        s.rc[0, 1] = -0.5
+        s.zs[0, 1] = 0.5
+
+        dgamma2 = s.gammadash2()
+        theta1D = s.quadpoints_theta
+        phi1D = s.quadpoints_phi
+        theta, phi = np.meshgrid(theta1D, phi1D)
+        integrand = 1 + np.cos(theta - phi)
+
+        norm_drdtheta = np.linalg.norm(dgamma2, axis=2)
+        theta_interp = theta
+        integrand_arclength = s.interpolate_on_arclength_grid(integrand, theta_interp)
+        for iphi in range(nphi):
+            integral_1 = np.sum(integrand[iphi, :] * norm_drdtheta[iphi, :]) / np.sum(norm_drdtheta[iphi, :])
+            integral_2 = np.sum(integrand_arclength[iphi, :]) / np.sum(np.ones_like(norm_drdtheta[iphi, :]))
+            self.assertAlmostEqual(integral_1, integral_2, places=3)
 
 
 class SurfaceDistanceTests(unittest.TestCase):

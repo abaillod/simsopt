@@ -2,6 +2,7 @@ import numpy as np
 import simsoptpp as sopp
 
 from .._core.optimizable import Optimizable
+from .plot import fix_matplotlib_3d
 
 
 class Surface(Optimizable):
@@ -18,10 +19,27 @@ class Surface(Optimizable):
         self.dependencies = []
         self.fixed = np.full(len(self.get_dofs()), False)
 
-    def plot(self, ax=None, show=True, plot_normal=False, plot_derivative=False, scalars=None, wireframe=True):
+    def plot(self, engine="matplotlib", ax=None, show=True, close=False, axis_equal=True,
+             plot_normal=False, plot_derivative=False, wireframe=True, **kwargs):
         """
-        Plot the surface using mayavi. 
-        Note: the `ax` and `show` parameter can be used to plot more than one surface:
+        Plot the surface in 3D using matplotlib/mayavi/plotly. 
+
+        Args:
+            engine: Selects the graphics engine. Currently supported options are ``"matplotlib"`` (default),
+              ``"mayavi"``, and ``"plotly"``.
+            ax: The figure/axis to be plotted on. This argument is useful when plotting multiple
+              objects on the same axes. If equal to the default ``None``, a new axis will be created.
+            show: Whether to call the ``show()`` function of the graphics engine.
+              Should be set to ``False`` if more objects will be plotted on the same axes.
+            close: Whether to close the seams in the surface where the angles jump back to 0.
+            axis_equal: For matplotlib, whether to adjust the scales of the x, y, and z axes so
+              distances in each direction appear equal.
+            plot_normal: Whether to plot the surface normal vectors. Only implemented for mayavi.
+            plot_derivative: Whether to plot the surface derivatives. Only implemented for mayavi.
+            wireframe: Whether to plot the wireframe in Mayavi.
+            kwargs: Any additional arguments to pass to the plotting function, like ``color='r'``.
+
+        Note: the ``ax`` and ``show`` parameters can be used to plot more than one surface:
 
         .. code-block::
 
@@ -29,25 +47,86 @@ class Surface(Optimizable):
             ax = surface2.plot(ax=ax, show=False)
             surface3.plot(ax=ax, show=True)
 
-
+        Returns:
+            An axis which could be passed to a further call to the graphics engine
+            so multiple objects are shown together.
         """
         gamma = self.gamma()
-
-        from mayavi import mlab
-        mlab.mesh(gamma[:, :, 0], gamma[:, :, 1], gamma[:, :, 2], scalars=scalars)
-        if wireframe:
-            mlab.mesh(gamma[:, :, 0], gamma[:, :, 1], gamma[:, :, 2], representation='wireframe', color=(0, 0, 0), opacity=0.5)
 
         if plot_derivative:
             dg1 = 0.05 * self.gammadash1()
             dg2 = 0.05 * self.gammadash2()
-            mlab.quiver3d(gamma[:, :, 0], gamma[:, :, 1], gamma[:, :, 2], dg1[:, :, 0], dg1[:, :, 1], dg1[:, :, 2])
-            mlab.quiver3d(gamma[:, :, 0], gamma[:, :, 1], gamma[:, :, 2], dg2[:, :, 0], dg2[:, :, 1], dg2[:, :, 2])
+        else:
+            # No need to calculate derivatives.
+            dg1 = np.array([[[1.0]]])
+            dg2 = np.array([[[1.0]]])
+
         if plot_normal:
-            n = 0.005 * self.normal()
-            mlab.quiver3d(gamma[:, :, 0], gamma[:, :, 1], gamma[:, :, 2], n[:, :, 0], n[:, :, 1], n[:, :, 2])
-        if show:
-            mlab.show()
+            normal = 0.005 * self.normal()
+        else:
+            # No need to calculate the normal
+            normal = np.array([[[1.0]]])
+
+        if close:
+            gamma = np.concatenate((gamma, gamma[:1, :, :]), axis=0)
+            gamma = np.concatenate((gamma, gamma[:, :1, :]), axis=1)
+
+            dg1 = np.concatenate((dg1, dg1[:1, :, :]), axis=0)
+            dg1 = np.concatenate((dg1, dg1[:, :1, :]), axis=1)
+
+            dg2 = np.concatenate((dg2, dg2[:1, :, :]), axis=0)
+            dg2 = np.concatenate((dg2, dg2[:, :1, :]), axis=1)
+
+            normal = np.concatenate((normal, normal[:1, :, :]), axis=0)
+            normal = np.concatenate((normal, normal[:, :1, :]), axis=1)
+
+        if engine == "matplotlib":
+            # plot in matplotlib.pyplot
+            import matplotlib.pyplot as plt
+
+            if ax is None or ax.name != "3d":
+                fig = plt.figure()
+                ax = fig.add_subplot(111, projection="3d")
+            ax.plot_surface(gamma[:, :, 0], gamma[:, :, 1], gamma[:, :, 2], **kwargs)
+            if axis_equal:
+                fix_matplotlib_3d(ax)
+            if show:
+                plt.show()
+
+        elif engine == "mayavi":
+            # plot 3D surface in mayavi.mlab
+            from mayavi import mlab
+
+            mlab.mesh(gamma[:, :, 0], gamma[:, :, 1], gamma[:, :, 2], **kwargs)
+            if wireframe:
+                mlab.mesh(gamma[:, :, 0], gamma[:, :, 1], gamma[:, :, 2], representation='wireframe', color=(0, 0, 0), opacity=0.5)
+
+            if plot_derivative:
+                mlab.quiver3d(gamma[:, :, 0], gamma[:, :, 1], gamma[:, :, 2], dg1[:, :, 0], dg1[:, :, 1], dg1[:, :, 2])
+                mlab.quiver3d(gamma[:, :, 0], gamma[:, :, 1], gamma[:, :, 2], dg2[:, :, 0], dg2[:, :, 1], dg2[:, :, 2])
+            if plot_normal:
+                mlab.quiver3d(gamma[:, :, 0], gamma[:, :, 1], gamma[:, :, 2], normal[:, :, 0], normal[:, :, 1], normal[:, :, 2])
+            if show:
+                mlab.show()
+
+        elif engine == "plotly":
+            # plot in plotly
+            import plotly.graph_objects as go
+
+            if "color" in list(kwargs.keys()):
+                color = kwargs["color"]
+                del kwargs["color"]
+                kwargs["colorscale"] = [[0, color], [1, color]]
+            # for plotly, ax is actually the figure
+            if ax is None:
+                ax = go.Figure()
+            ax.add_trace(go.Surface(x=gamma[:, :, 0], y=gamma[:, :, 1], z=gamma[:, :, 2], **kwargs))
+            ax.update_layout(scene_aspectmode="data")
+            if show:
+                ax.show()
+        else:
+            raise ValueError("Invalid engine option! Please use one of {matplotlib, mayavi, plotly}.")
+        return ax
 
     def to_vtk(self, filename):
         from pyevtk.hl import gridToVTK
@@ -96,7 +175,7 @@ class Surface(Optimizable):
         if phi < -np.pi:
             phi = phi + 2. * np.pi
 
-        # varphi are the search intervals on which we look for the cross section in 
+        # varphi are the search intervals on which we look for the cross section in
         # at constant cylindrical phi
         # The cross section is sampled at a number of points (theta_resolution) poloidally.
         varphi = np.asarray([0., 0.5, 1.0])
@@ -144,7 +223,7 @@ class Surface(Optimizable):
         # if idx_right == 0, then the subinterval must be idx_left = 0 and idx_right = 1
         idx_right = np.argmax(phi <= cyl_phi, axis=0)
         idx_right = np.where(idx_right == 0, 1, idx_right)
-        idx_left = idx_right-1 
+        idx_left = idx_right-1
 
         varphi_left = varphigrid[idx_left, np.arange(idx_left.size)]
         varphi_right = varphigrid[idx_right, np.arange(idx_right.size)]
@@ -157,7 +236,7 @@ class Surface(Optimizable):
             gamma = np.zeros((varphi_in.size, 3))
             self.gamma_lin(gamma, varphi_in, theta)
             phi = np.arctan2(gamma[:, 1], gamma[:, 0])
-            pinc = (phi < left_bound).astype(int) 
+            pinc = (phi < left_bound).astype(int)
             minc = (phi > right_bound).astype(int)
             phi = phi + 2.*np.pi * (pinc - minc)
             return phi
@@ -177,11 +256,11 @@ class Surface(Optimizable):
                 c = np.where(flag, b, c)
                 err = np.max(np.abs(a-c))
             b = (a + c)/2.
-            return b          
+            return b
         # bisect cyl_phi to compute the cross section
         sol = bisection(cyl_phi_left, varphi_left, cyl_phi_right, varphi_right)
         cross_section = np.zeros((sol.size, 3))
-        self.gamma_lin(cross_section, sol, theta) 
+        self.gamma_lin(cross_section, sol, theta)
         return cross_section
 
     def aspect_ratio(self):
@@ -194,11 +273,11 @@ class Surface(Optimizable):
         .. math::
             AR = R_{\text{major}} / R_{\text{minor}}
 
-        where 
+        where
 
         .. math::
             R_{\text{minor}} &= \sqrt{ \overline{A} / \pi } \\
-            R_{\text{major}} &= \frac{V}{2 \pi^2  R_{\text{minor}}^2} 
+            R_{\text{major}} &= \frac{V}{2 \pi^2  R_{\text{minor}}^2}
 
         and :math:`V` is the volume enclosed by the surface, and :math:`\overline{A}` is the
         average cross sectional area.
@@ -209,18 +288,18 @@ class Surface(Optimizable):
             \overline{A} = \frac{1}{2\pi} \int_{S_{\phi}} ~dS ~d\phi
 
         where :math:`S_\phi` is the cross section of the surface at the cylindrical angle :math:`\phi`.
-        Note that :math:`\int_{S_\phi} ~dS` can be rewritten as a line integral 
+        Note that :math:`\int_{S_\phi} ~dS` can be rewritten as a line integral
 
         .. math::
-            \int_{S_\phi}~dS &= \int_{S_\phi} ~dR dZ \\ 
-            &= \int_{\partial S_\phi}  [R,0] \cdot \mathbf n/\|\mathbf n\| ~dl \\ 
+            \int_{S_\phi}~dS &= \int_{S_\phi} ~dR dZ \\
+            &= \int_{\partial S_\phi}  [R,0] \cdot \mathbf n/\|\mathbf n\| ~dl \\
             &= \int^1_{0} R \frac{\partial Z}{\partial \theta}~d\theta
 
         where :math:`\mathbf n = [n_R, n_Z] = [\partial Z/\partial \theta, -\partial R/\partial \theta]` is the outward pointing normal.
 
-        Consider the surface in cylindrical coordinates terms of its angles :math:`[R(\varphi,\theta), 
-        \phi(\varphi,\theta), Z(\varphi,\theta)]`.  The boundary of the cross section 
-        :math:`\partial S_\phi` is given by the points :math:`\theta\rightarrow[R(\varphi(\phi,\theta),\theta),\phi, 
+        Consider the surface in cylindrical coordinates terms of its angles :math:`[R(\varphi,\theta),
+        \phi(\varphi,\theta), Z(\varphi,\theta)]`.  The boundary of the cross section
+        :math:`\partial S_\phi` is given by the points :math:`\theta\rightarrow[R(\varphi(\phi,\theta),\theta),\phi,
         Z(\varphi(\phi,\theta),\theta)]` for fixed :math:`\phi`.  The cross sectional area of :math:`S_\phi` becomes
 
         .. math::
@@ -242,7 +321,7 @@ class Surface(Optimizable):
         After the change of variables, the integral becomes:
 
         .. math::
-            \overline{A} = \frac{1}{2\pi}\int^{1}_{0}\int^{1}_{0} R(\varphi,\theta) \left[\frac{\partial Z}{\partial \varphi} 
+            \overline{A} = \frac{1}{2\pi}\int^{1}_{0}\int^{1}_{0} R(\varphi,\theta) \left[\frac{\partial Z}{\partial \varphi}
             \frac{\partial \varphi}{d \theta} + \frac{\partial Z}{\partial \theta} \right] \text{det} J ~d\theta ~d\varphi
 
         where :math:`\text{det}J` is the determinant of the mapping's Jacobian.
@@ -265,13 +344,67 @@ class Surface(Optimizable):
         Jinv = np.linalg.inv(J)
 
         dZ_dtheta = dgamma1[:, :, 2] * Jinv[:, :, 0, 1] + dgamma2[:, :, 2] * Jinv[:, :, 1, 1]
-        mean_cross_sectional_area = np.abs(np.mean(np.sqrt(x2y2) * dZ_dtheta * detJ))/(2 * np.pi) 
+        mean_cross_sectional_area = np.abs(np.mean(np.sqrt(x2y2) * dZ_dtheta * detJ))/(2 * np.pi)
 
         R_minor = np.sqrt(mean_cross_sectional_area / np.pi)
         R_major = np.abs(self.volume()) / (2. * np.pi**2 * R_minor**2)
 
         AR = R_major/R_minor
         return AR
+
+    def arclength_poloidal_angle(self):
+        """
+        Computes poloidal angle based on arclenth along magnetic surface at
+        constant phi. The resulting angle is in the range [0,1]. This is required
+        for evaluating the adjoint shape gradient for free-boundary calculations.
+
+        Returns:
+            theta_arclength: 2d array (numquadpoints_phi,numquadpoints_theta)
+                of arclength poloidal angle
+        """
+        gamma = self.gamma()
+        X = gamma[:, :, 0]
+        Y = gamma[:, :, 1]
+        Z = gamma[:, :, 2]
+        R = np.sqrt(X**2 + Y**2)
+
+        theta_arclength = np.zeros_like(gamma[:, :, 0])
+        nphi = len(theta_arclength[:, 0])
+        ntheta = len(theta_arclength[0, :])
+        for iphi in range(nphi):
+            for itheta in range(1, ntheta):
+                dr = np.sqrt((R[iphi, itheta] - R[iphi, itheta-1])**2
+                             + (Z[iphi, itheta] - Z[iphi, itheta-1])**2)
+                theta_arclength[iphi, itheta] = \
+                    theta_arclength[iphi, itheta-1] + dr
+            dr = np.sqrt((R[iphi, 0] - R[iphi, -1])**2
+                         + (Z[iphi, 0] - Z[iphi, -1])**2)
+            L = theta_arclength[iphi, -1] + dr
+            theta_arclength[iphi, :] = theta_arclength[iphi, :]/L
+        return theta_arclength
+
+    def interpolate_on_arclength_grid(self, function, theta_evaluate):
+        """
+        Interpolate function onto the theta_evaluate grid in the arclength
+        poloidal angle. This is required for evaluating the adjoint shape gradient
+        for free-boundary calculations.
+
+        Returns:
+            function_interpolated: 2d array (numquadpoints_phi,numquadpoints_theta)
+                defining interpolated function on arclength angle along curve
+                at constant phi
+        """
+        from scipy import interpolate
+
+        theta_arclength = self.arclength_poloidal_angle()
+        function_interpolated = np.zeros_like(function)
+        nphi = len(theta_arclength[:, 0])
+        for iphi in range(nphi):
+            f = interpolate.InterpolatedUnivariateSpline(
+                theta_arclength[iphi, :], function[iphi, :])
+            function_interpolated[iphi, :] = f(theta_evaluate[iphi, :])
+
+        return function_interpolated
 
 
 def signed_distance_from_surface(xyz, surface):
