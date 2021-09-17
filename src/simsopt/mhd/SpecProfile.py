@@ -26,7 +26,7 @@ logger = logging.getLogger('[{}]'.format(MPI.COMM_WORLD.Get_rank()) + __name__)
 # Here I have BdotN subclass optimizable
 class SpecProfile(Optimizable):
 
-    def __init__(self, Nvol, Lfreebound, ProfileName):
+    def __init__(self, Nvol, Lfreebound, ProfileName, Cumulative=False):
         if not isinstance(Nvol, int):
             raise TypeError('nfp must be an integer')
         if not isinstance(Lfreebound, int):
@@ -40,6 +40,7 @@ class SpecProfile(Optimizable):
         self.Lfreebound = Lfreebound
         self.ProfileName = ProfileName
         self.length = Nvol + Lfreebound
+        self.Cumulative = Cumulative
 
         Optimizable.__init__(self)
         
@@ -76,14 +77,14 @@ class SpecProfile(Optimizable):
     
     def get_value(self, ivol):
         """
-        Return a particular vc Parameter.
+        Return a particular value of profile in a specific volume.
         """
         self._validate_mn( ivol )
         return self.values[ivol]
 
     def set_value(self, ivol, val):
         """
-        Set a particular vs Parameter.
+        Set a particular value of profile in a specific volume.
         """
         self._validate_mn( ivol )
         self.values[ ivol ] = val
@@ -113,7 +114,18 @@ class SpecProfile(Optimizable):
         logger.info('set_dofs called, and at least one dof changed')
         self.recalculate = True
         self.recalculate_derivs = True
-        self.values = v 
+
+        if not self.Cumulative:
+            self.values = v 
+        else:
+            tmp = self.values
+            self.values[0] = v[0]
+            for ii in range(1,self.length):
+                if self.fixed[ii]:
+                    dv = tmp[ii]-tmp[ii-1]
+                    self.values[ii] = dv + self.values[ii-1]
+                else:
+                    self.values[ii] = v[ii]
 
 
     def fixed_range(self, vmin, vmax, fixed=True):
