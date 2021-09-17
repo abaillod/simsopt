@@ -216,6 +216,6 @@ class NormalField(Optimizable):
         """
         for m in range(mmin, mmax + 1):
             for n in range(nmin, nmax + 1):
-                self.set_fixed('vs({},{})'.format(m, n), fixed)
+                self.set_fixed('vns({},{})'.format(m, n), fixed)
                 if not self.stellsym:
-                    self.set_fixed('vc({},{})'.format(m, n), fixed)
+                    self.set_fixed('vnc({},{})'.format(m, n), fixed)
