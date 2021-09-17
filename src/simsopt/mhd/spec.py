@@ -45,12 +45,12 @@ except ImportError as e:
     logger.warning(str(e))
     # pyoculus_found = False
 
-from .._core.optimizable import Optimizable
-from .._core.util import ObjectiveFailure
-from ..geo.surfacerzfourier import SurfaceRZFourier
-from ..util.dev import SimsoptRequires
+from simsopt._core.optimizable import Optimizable
+from simsopt._core.util import ObjectiveFailure
+from simsopt.geo.surfacerzfourier import SurfaceRZFourier
+from simsopt.util.dev import SimsoptRequires
 if MPI is not None:
-    from ..util.mpi import MpiPartition
+    from simsopt.util.mpi import MpiPartition
 else:
     MpiPartition = None
 #from ..util.mpi import MpiPartition
@@ -281,6 +281,8 @@ class Spec(Optimizable):
             spec.sphdf5.init_convergence_output()
             logger.debug(f'About to call spec')
             spec.spec()
+
+            print('Force err = {}'.format(spec.Allglobal.forceerr))
             logger.debug('About to call diagnostics')
             spec.final_diagnostics()
             logger.debug('About to call write_grid')
@@ -346,7 +348,6 @@ class Spec(Optimizable):
         """
         self.run()
         return self.results.transform.fiota[1, 0]
-
 
 class Residue(Optimizable):
     """
@@ -421,6 +422,480 @@ class Residue(Optimizable):
             raise ObjectiveFailure("Residue calculation failed")
 
         return self.fixed_point.GreenesResidue
+
+    def get_dofs(self):
+        return np.array([])
+
+    def set_dofs(self, x):
+        self.need_to_run_code = True
+
+class ChaosVolume(Optimizable):
+    """ChaosVolume allows to determine a certain chaos volume by separating the chaotic trajectories from the non-chaotic ones using the fractal 
+    dimension of the magnetic field lines.
+
+        - It is not expected to have large scale differences between x and y, 
+        therefore the coordinates of each trajectory are scaled into a square 
+        [0, 1]x[0, 1] when computing the dimension. Point-like trajectories (0-dimensional) should still be detected as 0-dimensional.
+        - The box-count computing in __compute_LN_boxcount is the lengthiest part
+    """
+
+    def __init__(self, spec, critical_dim, polyfit_deg=6, kmin=1, kmax=11, base_reduction_factor=2, nppts=-1, boxcount_method=False, write_chaos_vol_to_file=False):
+        """Sets up the chaos volume getter.
+
+        Args:
+            spec: SPEC obect to analyse
+            critical_dim: critical dimension used to discriminate between chaotic and non-chaotic trajectories
+            polyfit_deg: degree of the polynomial fitted to approximate the fractal dimension
+            kmin: minimal exponent used to reduce the size of the boxes in box-count process
+            kmax: maximal exponent used to reduce the size of the boxes in box-count process
+            base_reduction_factor: base of the exponential factor by which the box sizes are reduced
+            nppts: number of points per line used for each field line. Defaults to the total number of points per line present in the input list
+            nptrj: number of trajectories used. Defaults to the total number of trajectories present in the input list 
+        """
+        # if not spec_found:
+        if spec is None:
+            raise RuntimeError(
+                "Residue requires py_spec package to be installed.")
+        
+        self.spec = spec
+        self.need_to_run_code = True
+        self.boxcount_method = boxcount_method
+        self.write_chaos_vol_to_file = write_chaos_vol_to_file
+        self.first_time_writing = True
+        # initialize parameters using the spec object
+        # chooses default toroidal plane to analyse at index 0
+        self.toroidal_plane = 0
+        if nppts == -1:
+            self.nppts = int(spec.inputlist.nppts)
+        else:
+            self.nppts = int(nppts)
+        # beware there is also a trajectory between each volume
+        self.nptrj = None
+
+        # load only necessary data, with the correct format
+        self.x = None
+        self.y = None
+        # do not load the x-y coordinates now
+
+        # flag for successful fractal dimension and chaos volume computation
+        self.fractal_dim_successful = False
+        self.chaos_vol_successful = False
+
+        # initialize parameters
+        self.polyfit_deg = int(polyfit_deg)
+        self.kmin = int(kmin)
+        self.kmax = int(kmax)
+        if self.kmin >= self.kmax:
+            raise ValueError("Please take kmin < kmax")
+        self.base_reduction_factor = np.float64(base_reduction_factor)
+        self.critical_dim = np.float64(critical_dim)
+
+        # initialize the fractal dimension array
+        self.fractal_dim = None
+        # initialize chaos volume
+        self.chaos_vol = np.float64(0)
+
+        # We may at some point want to allow ChaosVolume to use a
+        # different MpiPartition than the Spec object it is attached
+        # to, but for now we'll use the same MpiPartition for
+        # simplicity.
+        self.mpi = spec.mpi
+
+        # State dependencies
+        self.depends_on = ['spec']
+
+    def is_fractal_dim_successful(self):
+        """Returns True if the computation of the fractal dimensions has been successfully completed.
+
+        returns fractal_dim_successful: True if the fractal dimension computation is successfully completed, False otherwise
+        """
+        return self.fractal_dim_successful
+
+    def is_chaos_vol_successful(self):
+        """! Returns True if the computation of the chaos volume has been successfully completed.
+
+        returns chaos_vol_successful: True if the chaos volume computation is successfully completed, False otherwise
+        """
+        return self.chaos_vol_successful
+
+    def set_critical_dim(self, critical_dim):
+        """ Modifies critical_dim, after this one needs to compute the chaos volume again
+        """
+        self.chaos_vol_successful = False
+        self.critical_dim = np.float64(critical_dim)
+
+    def __load_xy(self, filename):
+        """Loads the necessary x-y coordinates 
+        """
+        output = py_spec.SPECout(filename)
+
+        self.nptrj = output.poincare.R.shape[0]
+
+        Igeometry = self.spec.inputlist.igeometry
+        # load only necessary data, with the correct format
+        if Igeometry == 3:
+            self.x = np.array(output.poincare.R[:, :, self.toroidal_plane])
+            self.y = np.array(output.poincare.Z[:, :, self.toroidal_plane])
+        elif Igeometry == 1:
+            self.x = np.array(np.mod(output.poincare.t[:, :, self.toroidal_plane], np.pi * 2))
+            self.y = np.array(output.poincare.R[:, :, self.toroidal_plane])
+        elif Igeometry == 2:
+            self.x = np.array(output.poincare.R[:, :, self.toroidal_plane] * np.cos(
+                output.poincare.t[:, :, self.toroidal_plane])
+            )
+            self.y = np.array(output.poincare.R[:, :, self.toroidal_plane] * np.sin(
+                output.poincare.t[:, :, self.toroidal_plane])
+            )
+        else:
+            raise ValueError("Unsupported geometry")
+
+    def __compute_LN_boxcount(self, traj_nbr=0):
+        """Computes the number of boxes N and the lengths of the boxes (compared to the maximal length of the line) L parameters necessary for fractal dimension computation using box-counting.
+
+        Args:
+            traj_nbr: index of the line for which N and L are computed, between 0 and nptrj
+
+        returns N, number of boxes containing a point of the curve
+        returns L, reduction factor of the boxes (a proportional factor does not matter on a logarithmic scale, since it transforms in a constant)
+        """
+        if traj_nbr >= self.nptrj:
+            raise Exception("Trajectory number is too high, must be strictly below {}".format(self.nptrj))
+        else:
+            traj_nbr = np.int64(traj_nbr)
+
+        x_min = np.min(self.x[traj_nbr, :])
+        y_min = np.min(self.y[traj_nbr, :])
+
+        Lmax_x = np.max(self.x[traj_nbr, :]) - x_min
+        Lmax_y = np.max(self.y[traj_nbr, :]) - y_min
+
+        if Lmax_x < 1e-8:
+            # point-like trajectories are possible
+            Lmax_x = 1
+
+        if Lmax_y < 1e-8:
+            # point-like trajectories are possible
+            Lmax_y = 1
+
+        ks = np.linspace(self.kmin, self.kmax, self.kmax - self.kmin + 1)
+        N = np.zeros(self.kmax - self.kmin + 1)
+        L = 1 / self.base_reduction_factor ** ks
+        s = np.int64(np.ceil(self.base_reduction_factor ** ks))
+
+        for k in range(self.kmin, self.kmax + 1):
+            # compute outside the for mm loop for much better performances
+            # x-y are normalized on a [0, 1]x[0, 1] square
+            # the x-y data has already been correctly imported in __load_xy()
+            ii = np.int64(np.floor((self.x[traj_nbr, :] - x_min) / (Lmax_x * L[k-self.kmin])))
+            jj = np.int64(np.floor((self.y[traj_nbr, :] - y_min) / (Lmax_y * L[k-self.kmin])))
+
+            # uses the unicity of elements in sets to vectorize the counter
+            # ii has already length of nppts
+            try:
+                counter = {(ii[mm],jj[mm]) for mm in range(len(ii))}
+            except:
+                raise Exception("Problem in counter for compute_LN_boxcount.")
+            N[k-self.kmin] = len(counter)
+
+        return L, N
+
+    def __compute_fractal_dim(self, L, N, remove_plateau=False):
+        """Computes the fractal dimension using a polynomial fit on the N, L parameters resulting from __compute_LN_boxcount().
+
+        Args:
+            N: number of boxes containing a point of the curve
+            L: lengths of the boxes (normalized to the maximal length of the curve)
+            remove_plateau: if True removes the saturation plateau before fitting N and L. If set to True, consider using a lower polynomial degree (4 or 5 for instance) to avoid overfitting the data
+
+        returns fract_dim: fractal dimension corresponding to N, L
+        """
+        plateau_threshold = 0.98 * self.nppts
+        if remove_plateau:
+            # the idea is to remove the saturation plateau first
+            # the saturation may occur when the boxsizes are too thin and pick each point separately
+            # in such cases the last values of log(N) saturates near log(nppts)
+            # only remove the plateau if there are at least 3 good points
+            # (important for point-like trajectories, to have at least some points)
+            if N[2] < plateau_threshold:
+                L = L[N <= plateau_threshold]
+                # we have to mask L before masking N
+                N = N[N <= plateau_threshold]
+
+        # fit the data
+        p = np.polyfit(-np.log(L), np.log(N), self.polyfit_deg)
+        dp = np.polyder(p)
+        d2p = np.polyder(dp)
+
+        # 200 logarithmically spaced values between 1/L[0] and 1/L[-1]
+        epsilon = np.logspace(-np.log10(L[0]), -np.log10(L[-1]), num=200)
+
+        # compute the curvature
+        # don't need to take into account the variations in N direction
+        # since we consider linearly spaced points (on a log scale)
+        curvature = np.abs(np.polyval(d2p, np.log(epsilon)))/(1+np.polyval(dp, np.log(epsilon)) ** 2) ** (3/2)
+
+        # curvature threshold (ok, but kind of arbitrary for the moment)
+        threshold_fit = max(max(curvature)/10, 0.15)
+
+        # find all zones (min, max indices) with curvature below threshold
+        idx_max_fit = np.array([ii for ii, value in enumerate(curvature[0:-1]) if value < threshold_fit and curvature[ii+1] >= threshold_fit])
+        idx_min_fit = np.array([ii for ii, value in enumerate(curvature[1:]) if value < threshold_fit and curvature[ii] >= threshold_fit])
+
+        if curvature[-1] < threshold_fit:
+            # check to avoid empty numpy arrays
+            if np.any(idx_max_fit):
+                idx_max_fit = np.concatenate((idx_max_fit, [len(curvature)-1]))
+            else:
+                idx_max_fit = np.array([len(curvature)-1])
+
+        if curvature[0] < threshold_fit:
+            # check to avoid empty numpy arrays
+            if np.any(idx_min_fit):
+                idx_min_fit = np.concatenate(([0], idx_min_fit))
+            else:
+                idx_min_fit = np.array([0])
+
+        # if multiple zones, choose the largest which is not a plateau
+        if len(idx_min_fit) > 1:
+            # if the plateau has not already been removed, it is removed now
+            if not remove_plateau:
+                idx_min_plateau = [ii for ii, value in enumerate(np.exp(np.polyval(p, np.log(epsilon)))) if value >= plateau_threshold]
+                # check if idx_min_plateau is not empty
+                if not idx_min_plateau:
+                    pass
+                else:
+                    idx_min_plateau = min(idx_min_plateau)
+                    while idx_max_fit[-1] >= idx_min_plateau and len(idx_max_fit) > 1:
+                        idx_max_fit = idx_max_fit[:-1]
+                        idx_min_fit = idx_min_fit[:-1]
+
+            # chooses the indices covering the largest zone (plateau has been removed at this point)
+            max_diff = max(idx_max_fit-idx_min_fit)
+            # in case of multiple zones with same differences, the zone with the lowest index is chosen
+            idx_max_diff = min([ii for ii, value in enumerate(idx_max_fit-idx_min_fit) if value == max_diff])
+
+            # indices corresponding to the linear zone
+            idx_max_fit = idx_max_fit[idx_max_diff].item()
+            idx_min_fit = idx_min_fit[idx_max_diff].item()
+        elif len(idx_min_fit) == 1:
+            idx_max_fit = idx_max_fit.item()
+            idx_min_fit = idx_min_fit.item()
+        else:
+            raise ValueError("No minima for the curvature has been found")
+
+        # compute the dimension
+        fractal_dim = np.mean(np.polyval(dp, np.log(epsilon[idx_min_fit:idx_max_fit])))
+
+        return fractal_dim
+
+    def get_fractal_dim(self, force_compute_fractal_dim=True):
+        """Computes the fractal dimensions for all trajectories in x, y. If is_fractal_dim_successful() is False or force_compute_fractal_dim is True, computes the fractal dimensions before returning it. Otherwise, simply returns the fractal dimensions.
+
+        Args:
+            force_compute_fractal_dim: if True forces to compute the fractal dimensions
+
+        returns fractal_dim, fractal dimensions of the trajectories
+        """
+        if self.need_to_run_code:
+            # use correct nbr pts per line before running SPEC
+            self.spec.inputlist.nppts = self.nppts
+            self.spec.run()
+            # since the trajectories changed, the fractal dimensions need to be computed again
+            force_compute_fractal_dim = True
+
+        filename = self.spec.extension + '_{:03}_{:06}.sp.h5'.format(self.spec.mpi.group, self.spec.counter)
+
+        self.__load_xy(filename)
+        self.fractal_dim = np.zeros(self.nptrj)
+
+        if self.fractal_dim_successful is False or force_compute_fractal_dim is True:
+            for line in range(self.nptrj):
+                L, N = self.__compute_LN_boxcount(line)
+                self.fractal_dim[line] = self.__compute_fractal_dim(L, N, remove_plateau=False)
+
+        # print(self.fractal_dim)
+        self.fractal_dim_successful = True
+        return self.fractal_dim
+
+    def J(self, force_compute_chaos_vol=True, force_compute_fractal_dim=True):
+        """Computes the chaos volume in x, y. If is_chaos_vol_successful() is False or force_compute_chaos_vol is True, computes the chaos volume before returning it. Otherwise, simply returns the chaos volume.
+        Run Spec if needed.
+
+        Args:
+            force_compute_chaos_vol: if True forces to compute the chaos volume
+            force_compute_fractal_dim: if True forces to compute the fractal dimensions
+
+        returns chaos_vol: chaos volume of the trajectories
+        """
+        fractal_dim = self.get_fractal_dim(force_compute_fractal_dim)
+
+        if self.chaos_vol_successful is False or force_compute_chaos_vol is True:
+            if not self.boxcount_method:
+                # using sigmoid function to smooth the chaos volume (smoother version of Heaviside function in a sense)
+                def smooth_heaviside(x, k=20, D_crit=self.critical_dim, D_0=1.1):
+                    #
+                    # k: slope is k/4
+                    # 
+                    #
+                    # pure sigmoid:
+                    # return 1/(1+np.exp(-k*(x-D_crit)))
+                    y = np.zeros_like(x)
+
+                    # quadratic interpolation between D_0 and D_crit
+                    # b = k / 2 * (D_crit - D_0)
+                    # a = (D_crit-D_0)**(-b)/2
+                    # for ii, z in enumerate(x):
+                    #     if z >= D_0 and z < D_crit:
+                    #         y[ii] = a*(z-D_0)**b
+                    #     elif z >= D_crit:
+                    #         y[ii] = 1/(1+np.exp(-k*(z-D_crit)))
+
+                    # sinh interpolation between D_0 and D_crit
+                    b = k / 4 * np.sinh(2*(D_crit - D_0))
+                    a = (np.sinh(D_crit-D_0))**(-b)/2
+                    for ii, z in enumerate(x):
+                        if z >= D_0 and z < D_crit:
+                            y[ii] = a*(np.sinh(z-D_0))**b
+                        elif z >= D_crit:
+                            y[ii] = 1/(1+np.exp(-k*(z-D_crit)))
+
+                    return y
+
+                #TODO: MAKE IT PROPORTIONAL TO DTFLUX
+                traj_chaos_measure = 1 / self.nptrj
+                self.chaos_vol = traj_chaos_measure * sum(smooth_heaviside(fractal_dim))
+
+            else:
+                # using a sort of box-counting method to evaluate the chaos volume
+                # 1. ------------- total volume -------------
+                # find the index of the boundary field line
+                idx_x_max = list(set(np.where(self.x == np.max(self.x))[0]))
+                idx_x_min = list(set(np.where(self.x == np.min(self.x))[0]))
+                idx_y_max = list(set(np.where(self.y == np.max(self.y))[0]))
+                idx_y_min = list(set(np.where(self.y == np.min(self.y))[0]))
+
+                if len(idx_x_max) > 1 or len(idx_x_min) > 1 or len(idx_y_max) > 1 or len(idx_y_min) > 1:
+                    raise RuntimeError("There are multiple trajectories near the boundary.")
+                elif idx_x_max[0] != idx_x_min[0] or idx_x_max[0] != idx_y_max[0] or idx_x_max[0] != idx_y_min[0] or idx_x_min[0] != idx_y_max[0] or idx_x_min[0] != idx_y_min[0] or idx_y_max[0] != idx_y_min[0]:
+                    raise RuntimeError("The boundary is not the same trajectory all along.")
+
+                idx_boundary_traj = idx_x_max[0]
+
+                # TODO USE SPEC MAGNETIC AXIS ?
+                # computes the angle w.r.t. the mean of the boundary trajectory
+                x_c = np.mean(self.x[idx_boundary_traj, :])
+                y_c = np.mean(self.y[idx_boundary_traj, :])
+
+                # convert array to dictionary for sorting
+                angles = dict(enumerate(np.arctan2(self.y[idx_boundary_traj, :] - y_c, self.x[idx_boundary_traj, :] - x_c)))
+                sorted_idx = [*dict(sorted(angles.items(), key=lambda x:x[1]))]
+
+                a1, a2 = 0, 0
+                #TODO USE SPEC VOLUME OUTPUT? DIVIDE BY 2PI?
+                # shoelace area for a polygon
+                for ii in range(self.nppts-1):
+                    a1 += (self.x[idx_boundary_traj, sorted_idx[ii]] - x_c) * (self.y[idx_boundary_traj, sorted_idx[ii+1]] - x_c)
+                    a2 += (self.y[idx_boundary_traj, sorted_idx[ii]] - x_c) * (self.x[idx_boundary_traj, sorted_idx[ii+1]] - x_c)
+                a1 += (self.x[idx_boundary_traj, sorted_idx[-1]] - x_c) * (self.y[idx_boundary_traj, sorted_idx[0]]-y_c)
+                a2 += (self.y[idx_boundary_traj, sorted_idx[-1]] - y_c) * (self.x[idx_boundary_traj, sorted_idx[0]]-x_c)
+                # total volume occupied by the Poincaré section
+                V_tot = abs(a1 - a2) / 2
+
+                # 2. ------------- chaos volume -------------
+                # load chaotic trajectories
+                nbr_chaotic_traj = sum(fractal_dim >= self.critical_dim)
+                if nbr_chaotic_traj > 0:
+                    # Store all  chaotic points in a single array
+                    x = np.zeros(nbr_chaotic_traj * self.nppts)
+                    y = np.zeros(nbr_chaotic_traj * self.nppts)
+                    traj_chaotic_nbr = 0
+                    for traj_nbr, dim in enumerate(fractal_dim):
+                        # fiters the chaotic field lines
+                        if dim >= self.critical_dim:
+                            x[traj_chaotic_nbr*self.nppts:(traj_chaotic_nbr+1)*self.nppts] = self.x[traj_nbr, :]
+                            y[traj_chaotic_nbr*self.nppts:(traj_chaotic_nbr+1)*self.nppts] = self.y[traj_nbr, :]
+                            traj_chaotic_nbr += 1
+
+                    # determine min, max to use for all chaotic points
+                    x_min = np.min(x)
+                    y_min = np.min(y)
+
+                    # size of the boxes
+                    #TODO: USE BOX SIZE RIGHT BEFORE BOX COUNTING SATURATION - see MATLAB get_fractal_dim
+                    z = 16 * 2 ** (np.log10(self.nppts))
+                    L_x = (np.max(x) - x_min) / z
+                    L_y = (np.max(y) - y_min) / z
+
+                    # x-y indices
+                    ii = np.int64(np.floor((x - x_min) / L_x))
+                    jj = np.int64(np.floor((y - y_min) / L_y))
+                    try:
+                        #Use sets to avoid duplicates
+                        counter = {(ii[mm],jj[mm]) for mm in range(len(ii))}
+                    except:
+                        raise Exception("Problem in counter for get_chaos_vol with method 3.")
+
+                    N = len(counter)
+                    V_chaos = N * L_x * L_y
+                else:
+                    V_chaos = 0
+
+                self.chaos_vol = V_chaos / V_tot
+
+        self.need_to_run_code = False
+        self.chaos_vol_successful = True
+
+        if self.write_chaos_vol_to_file:
+            self.print_to_file()
+
+        return self.chaos_vol
+
+    def print_to_file(self):
+        """Prints the current state of the ChaosVolume instance to file
+        """
+        filename = self.spec.extension + '_Vchaos.csv'
+        max_rc_zs = min(self.spec.inputlist.ntor, 6)
+        if self.first_time_writing:
+            with open(filename, 'w+') as file:
+                file.write('Vchaos,')
+                for m in range(max_rc_zs+1):
+                    for n in range(max_rc_zs+1):
+                        file.write('rc({},{}),'.format(m, n))
+                for m in range(max_rc_zs+1):
+                    for n in range(max_rc_zs+1):
+                        file.write('zs({},{}),'.format(m, n))
+
+                file.write('Dcrit,nptrj,nppts,polyfit_degree,base_reduc,kmin,kmax')
+                file.write('\n')
+                self.first_time_writing = False
+        
+        if self.chaos_vol_successful:
+            with open(filename, 'a+') as file:
+                file.write('{},'.format(self.chaos_vol))
+                for m in range(max_rc_zs+1):
+                    for n in range(max_rc_zs+1):
+                        file.write('{},'.format(self.spec.boundary.get_rc(m,n)))
+                for m in range(max_rc_zs+1):
+                    for n in range(max_rc_zs+1):
+                        file.write('{},'.format(self.spec.boundary.get_zs(m,n)))
+
+                file.write('{},{},{},{},{},{},{}'.format(self.critical_dim, self.nptrj, self.nppts, self.polyfit_deg, self.base_reduction_factor, self.kmin, self.kmax))
+                file.write('\n')
+
+    def print_current_state(self):
+        """Prints the current state of the ChaosVolume instance
+        """
+        print("Successful fractal dimension computation : {}".format(self.fractal_dim_successful))
+        print("Successful chaos volume computation : {}".format(self.chaos_vol_successful))
+        if self.chaos_vol_successful:
+            print("Chaos volume found : {:%} of the total volume".format(self.chaos_vol))
+        print("Critical dimension : {}".format(self.critical_dim))
+        print("Nbr of trajectories : {}".format(self.nptrj))
+        print("Nbr of pts per line in x,y : {}".format(self.nppts))
+        print("Degree of the polynomial fitted : {}".format(self.polyfit_deg))
+        print("Base of the reduction factor : {}".format(self.base_reduction_factor))
+        print("Maximal exponent used for boxsizes : {}".format(self.kmax))
+        print("Minimal exponent used for boxsizes : {}".format(self.kmin))
 
     def get_dofs(self):
         return np.array([])
