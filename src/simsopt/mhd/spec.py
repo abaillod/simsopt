@@ -160,7 +160,7 @@ class Spec(Optimizable):
 
                                         
 
-        self.Ivolume = SpecProfile( si.nvol, si.lfreebound, 'Ivolume')
+        self.Ivolume = SpecProfile( si.nvol, si.lfreebound, 'Ivolume', Cumulative=True)
 
         # Transfer the boundary shape from fortran to the boundary
         # surface object:
