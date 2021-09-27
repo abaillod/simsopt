@@ -88,13 +88,15 @@ class Spec(Optimizable):
         keep_all_files: If ``False``, all output files will be deleted
           except for the first and most recent ones from worker group 0. If 
           ``True``, all output files will be kept.
+        tolerance: Maximum allowed valued for force error
     """
 
     def __init__(self,
                  filename: Union[str, None] = None,
                  mpi: Union[MpiPartition, None] = None,
                  verbose: bool = True,
-                 keep_all_files: bool = False):
+                 keep_all_files: bool = False,
+                 tolerance: float = 1e-12):
 
         #if not spec_found:
         if spec is None:
@@ -143,6 +145,11 @@ class Spec(Optimizable):
             if not filename.endswith('.sp'):
                 filename = filename + '.sp'
             logger.info("Initializing a SPEC object from file: " + filename)
+
+        if tolerance<=0:
+            raise ValueError('Tolerance should be larger than zero!')
+
+        self.tolerance = tolerance
 
         self.init(filename)
         self.extension = filename[:-3]
@@ -321,8 +328,6 @@ class Spec(Optimizable):
             spec.sphdf5.init_convergence_output()
             logger.debug(f'About to call spec')
             spec.spec()
-
-            print('Force err = {}'.format(spec.Allglobal.forceerr))
             logger.debug('About to call diagnostics')
             spec.final_diagnostics()
             logger.debug('About to call write_grid')
@@ -354,6 +359,11 @@ class Spec(Optimizable):
             raise ObjectiveFailure("Unable to read results following SPEC execution")
 
         logger.info("Successfully loaded SPEC results.")
+
+        if self.results.output.ForceErr > self.tolerance:
+            print( 'raising objective failure; SPEC did not converge')
+            raise ObjectiveFailure("SPEC didn't converge")
+            
         self.need_to_run_code = False
 
         # Group leaders handle deletion of files:
