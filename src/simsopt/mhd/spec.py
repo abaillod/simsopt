@@ -361,7 +361,6 @@ class Spec(Optimizable):
         logger.info("Successfully loaded SPEC results.")
 
         if self.results.output.ForceErr > self.tolerance:
-            print( 'raising objective failure; SPEC did not converge')
             raise ObjectiveFailure("SPEC didn't converge")
             
         self.need_to_run_code = False
