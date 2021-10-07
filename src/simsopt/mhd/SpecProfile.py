@@ -93,13 +93,19 @@ class SpecProfile(Optimizable):
 
     def get_dofs(self):
         """
-        Return a 1D numpy array with all the degrees of freedom.
+        Return a 1D numpy array with all the degrees of freedom, non-cumulative
         """
-        return self.values
+        tmp = self.values
+
+        tmp[0] = self.values[0]
+        for ii in range(1,self.length):
+            tmp[ii] = self.values[ii] - tmp[ii-1]
+
+        return tmp
 
     def set_dofs(self, v):
         """
-        Set the shape coefficients from a 1D list/array
+        Set the shape coefficients from a 1D list/array - given as a non-cumulative array
         """
 
         if len(v) != self.length:
@@ -125,7 +131,7 @@ class SpecProfile(Optimizable):
                     dv = tmp[ii]-tmp[ii-1]
                     self.values[ii] = dv + self.values[ii-1]
                 else:
-                    self.values[ii] = v[ii]
+                    self.values[ii] = v[ii] + self.values[ii-1]
 
 
     def fixed_range(self, vmin, vmax, fixed=True):
