@@ -13,6 +13,7 @@ from jax.config import config
 config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp
+import copy
 from jax import jacrev, jit
 
 import numpy as np
@@ -66,7 +67,7 @@ class SpecProfile(Optimizable):
         return names
 
 
-    def _validate_mn(self, ivol):
+    def _validate_vol(self, ivol):
         """
         Check whether ivol is in the allowed range.
         """
@@ -79,30 +80,31 @@ class SpecProfile(Optimizable):
         """
         Return a particular value of profile in a specific volume.
         """
-        self._validate_mn( ivol )
+        self._validate_vol( ivol )
         return self.values[ivol]
 
     def set_value(self, ivol, val):
         """
         Set a particular value of profile in a specific volume.
         """
-        self._validate_mn( ivol )
+        self._validate_vol( ivol )
         self.values[ ivol ] = val
         self.recalculate = True
         self.recalculate_derivs = True    
 
-    def get_dofs(self, cumulative=False):
+    def get_dofs(self):
         """
         Return a 1D numpy array with all the degrees of freedom, non-cumulative
         """
-        tmp = self.values
-
-        if not cumulative:
+        if self.Cumulative:
+            tmp = [0] * self.length
             tmp[0] = self.values[0]
-            for ii in range(1,self.length):
-                tmp[ii] = self.values[ii] - tmp[ii-1]
+            tmp[1:] = np.diff(self.values)
+            out = copy.deepcopy(tmp)
+        else:
+            out = copy.deepcopy(self.values)
 
-        return tmp
+        return out
 
     def set_dofs(self, v):
         """
@@ -116,6 +118,8 @@ class SpecProfile(Optimizable):
         # Check whether any elements actually change:
         if np.all(np.abs(self.get_dofs() - np.array(v)) == 0):
             logger.info('set_dofs called, but no dofs actually changed')
+            logger.info('v = ' + str(v))
+            logger.info('dofs = ' + str(self.get_dofs()))
             return
 
         logger.info('set_dofs called, and at least one dof changed')
@@ -125,14 +129,31 @@ class SpecProfile(Optimizable):
         if not self.Cumulative:
             self.values = v 
         else:
-            tmp = self.values
-            self.values[0] = v[0]
+            dv = np.zeros((1,self.length))
+            
+            logger.debug('Building dv...')
+            dv = [0] * self.length
+            dv[0] = self.values[0]
             for ii in range(1,self.length):
                 if self.fixed[ii]:
-                    dv = tmp[ii]-tmp[ii-1]
-                    self.values[ii] = dv + self.values[ii-1]
+                    logger.debug('ii=' + str(ii) + ' fixed')
+                    if self.Cumulative:
+                        dv[ii] = self.values[ii] -self.values[ii-1]
+                    else:
+                        dv[ii] = self.values[ii]
                 else:
-                    self.values[ii] = v[ii] + self.values[ii-1]
+                    logger.debug('ii=' + str(ii) + ' not fixed')
+                    dv[ii] = v[ii]
+            
+            logger.debug('dv = ' + str(dv))
+                    
+            self.values[0] = v[0]
+            for ii in range(1,self.length):
+                if self.Cumulative:
+                    self.values[ii] = self.values[ii-1] + dv[ii]
+                else:
+                    self.values[ii] = dv[ii]
+
 
 
     def fixed_range(self, vmin, vmax, fixed=True):
