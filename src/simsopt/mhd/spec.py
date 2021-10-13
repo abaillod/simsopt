@@ -295,7 +295,7 @@ class Spec(Optimizable):
         si.zac[:] = 0.0
 
         #Set volume current
-        si.ivolume[0:self.Ivolume.length] = self.Ivolume.get_dofs()
+        si.ivolume[0:self.Ivolume.length] = self.Ivolume.get_dofs(cumulative=True)
         si.curtor = si.ivolume[-1] + np.sum(si.isurf)
 
         # Another possible way to initialize the coordinate axis: use
