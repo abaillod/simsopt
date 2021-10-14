@@ -167,7 +167,14 @@ class Spec(Optimizable):
 
                                         
 
-        self.Ivolume = SpecProfile( si.nvol, si.lfreebound, 'Ivolume', Cumulative=True)
+        self.Ivolume = SpecProfile( si.nvol, si.lfreebound, 'Ivolume')
+
+        sivol = si.ivolume
+        self.mvol =  (si.nvol + si.lfreebound)
+        dsivol = [0] * self.mvol
+        dsivol[0] = si.ivolume[0]
+        dsivol[1:self.mvol] = [sivol[ii] - sivol[ii-1] for ii in range(1,self.mvol)]
+        self.Ivolume.values = dsivol[0:self.mvol]
 
         # Transfer the boundary shape from fortran to the boundary
         # surface object:
@@ -295,8 +302,12 @@ class Spec(Optimizable):
         si.zac[:] = 0.0
 
         #Set volume current
-        si.ivolume[0:self.Ivolume.length] = self.Ivolume.get_dofs(cumulative=True)
-        si.curtor = si.ivolume[-1] + np.sum(si.isurf)
+        divol = self.Ivolume.get_dofs()
+        si.ivolume[0] = divol[0]
+        for ii in range(1,self.mvol):
+            si.ivolume[ii] = si.ivolume[ii-1] + divol[ii]
+
+        si.curtor = si.ivolume[self.mvol-1] + np.sum(si.isurf)
 
         # Another possible way to initialize the coordinate axis: use
         # the m=0 modes of the boundary.

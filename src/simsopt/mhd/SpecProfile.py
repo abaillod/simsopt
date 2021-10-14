@@ -27,7 +27,7 @@ logger = logging.getLogger('[{}]'.format(MPI.COMM_WORLD.Get_rank()) + __name__)
 # Here I have BdotN subclass optimizable
 class SpecProfile(Optimizable):
 
-    def __init__(self, Nvol, Lfreebound, ProfileName, Cumulative=False):
+    def __init__(self, Nvol, Lfreebound, ProfileName):
         if not isinstance(Nvol, int):
             raise TypeError('nfp must be an integer')
         if not isinstance(Lfreebound, int):
@@ -41,7 +41,6 @@ class SpecProfile(Optimizable):
         self.Lfreebound = Lfreebound
         self.ProfileName = ProfileName
         self.length = Nvol + Lfreebound
-        self.Cumulative = Cumulative
 
         Optimizable.__init__(self)
         
@@ -94,21 +93,14 @@ class SpecProfile(Optimizable):
 
     def get_dofs(self):
         """
-        Return a 1D numpy array with all the degrees of freedom, non-cumulative
+        Return a 1D numpy array with all the degrees of freedom
         """
-        if self.Cumulative:
-            tmp = [0] * self.length
-            tmp[0] = self.values[0]
-            tmp[1:] = np.diff(self.values)
-            out = copy.deepcopy(tmp)
-        else:
-            out = copy.deepcopy(self.values)
 
-        return out
+        return copy.deepcopy(self.values)
 
     def set_dofs(self, v):
         """
-        Set the shape coefficients from a 1D list/array - given as a non-cumulative array
+        Set the shape coefficients from a 1D list/array
         """
 
         if len(v) != self.length:
@@ -118,41 +110,15 @@ class SpecProfile(Optimizable):
         # Check whether any elements actually change:
         if np.all(np.abs(self.get_dofs() - np.array(v)) == 0):
             logger.info('set_dofs called, but no dofs actually changed')
-            logger.info('v = ' + str(v))
-            logger.info('dofs = ' + str(self.get_dofs()))
             return
 
         logger.info('set_dofs called, and at least one dof changed')
         self.recalculate = True
         self.recalculate_derivs = True
 
-        if not self.Cumulative:
-            self.values = v 
-        else:
-            dv = np.zeros((1,self.length))
-            
-            logger.debug('Building dv...')
-            dv = [0] * self.length
-            dv[0] = self.values[0]
-            for ii in range(1,self.length):
-                if self.fixed[ii]:
-                    logger.debug('ii=' + str(ii) + ' fixed')
-                    if self.Cumulative:
-                        dv[ii] = self.values[ii] -self.values[ii-1]
-                    else:
-                        dv[ii] = self.values[ii]
-                else:
-                    logger.debug('ii=' + str(ii) + ' not fixed')
-                    dv[ii] = v[ii]
-            
-            logger.debug('dv = ' + str(dv))
-                    
-            self.values[0] = v[0]
-            for ii in range(1,self.length):
-                if self.Cumulative:
-                    self.values[ii] = self.values[ii-1] + dv[ii]
-                else:
-                    self.values[ii] = dv[ii]
+        for ii in range(0,self.length):
+            if not self.fixed[ii]:
+                self.values[ii] = v[ii]
 
 
 
@@ -164,4 +130,4 @@ class SpecProfile(Optimizable):
         property fixed set to fixed
         """
         for ivol in range(vmin, vmax + 1):
-            self.set_fixed(self.ProfileName, '({})'.format(ivol), fixed)
+            self.set_fixed(self.ProfileName + '({})'.format(ivol), fixed)
