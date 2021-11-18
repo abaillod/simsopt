@@ -383,12 +383,13 @@ class Spec(Optimizable):
         if self.results.output.ForceErr > self.tolerance:
             raise ObjectiveFailure("SPEC didn't converge")
 
-        if not fd_bool and self.mpi.proc0_world:
+        if not fd_bool:
             self.step_counter += 1
-            fname_step = self.extension + '_{:03}.sp'.format(self.step_counter)
+            fname_step = 'step_tmp.sp'
 
-            copyfile( filename+'.sp.end', fname_step )
-               
+            if  self.mpi.proc0_world:
+                copyfile( filename+'.sp.end', fname_step )
+                       
         # Will now read initial guess
         self.fname_initial_guess = fname_step
 
