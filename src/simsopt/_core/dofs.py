@@ -223,7 +223,7 @@ class Dofs:
                     x[j] = objx[self.indices[j]]
         return x
 
-    def f(self, x=None):
+    def f(self, x=None, fd_bool=False):
         """
         Return the vector of function values. Result is a 1D numpy array.
 
@@ -243,7 +243,7 @@ class Dofs:
         failed = False
         for j, func in enumerate(self.funcs):
             try:
-                f = func()
+                f = func(fd_bool)
             except ObjectiveFailure:
                 logger.info("Function evaluation failed")
                 failed = True

@@ -10,6 +10,7 @@ import logging
 from typing import Union
 import os.path
 import traceback
+from shutil import copyfile
 
 import numpy as np
 
@@ -146,6 +147,9 @@ class Spec(Optimizable):
                 filename = filename + '.sp'
             logger.info("Initializing a SPEC object from file: " + filename)
 
+        # File to read initial guess from
+        self.fname_initial_guess = filename
+
         if tolerance<=0:
             raise ValueError('Tolerance should be larger than zero!')
 
@@ -207,6 +211,7 @@ class Spec(Optimizable):
 
         self.need_to_run_code = True
         self.counter = -1
+        self.step_counter = -1
 
         # By default, all dofs owned by SPEC directly, as opposed to
         # dofs owned by the boundary surface object, are fixed.
@@ -245,7 +250,7 @@ class Spec(Optimizable):
         spec.preset()
         logger.debug("Done with init")
 
-    def run(self):
+    def run(self, fd_bool=False):
         """
         Run SPEC, if needed.
         """
@@ -253,6 +258,10 @@ class Spec(Optimizable):
             logger.info("run() called but no need to re-run SPEC.")
             return
         logger.info("Preparing to run SPEC.")
+
+        # Read last converged case for correct initial guess
+        self.init( self.fname_initial_guess )
+
         self.counter += 1
 
         si = self.inputlist  # Shorthand
@@ -373,7 +382,16 @@ class Spec(Optimizable):
 
         if self.results.output.ForceErr > self.tolerance:
             raise ObjectiveFailure("SPEC didn't converge")
-            
+
+        if not fd_bool and self.mpi.proc0_world:
+            self.step_counter += 1
+            fname_step = self.extension + '_{:03}.sp'.format(self.step_counter)
+
+            copyfile( filename+'.sp.end', fname_step )
+               
+        # Will now read initial guess
+        self.fname_initial_guess = fname_step
+
         self.need_to_run_code = False
 
         # Group leaders handle deletion of files:
@@ -456,7 +474,7 @@ class Residue(Optimizable):
         # simplicity.
         self.mpi = spec.mpi
 
-    def J(self):
+    def J(self, fd_bool=False):
         """
         Run Spec if needed, find the periodic field line, and return the residue
         """
@@ -465,7 +483,7 @@ class Residue(Optimizable):
             return
 
         if self.need_to_run_code:
-            self.spec.run()
+            self.spec.run(fd_bool)
             specb = pyoculus.problems.SPECBfield(self.spec.results, self.vol)
             # Set nrestart=0 because otherwise the random guesses in
             # pyoculus can cause examples/tests to be

@@ -202,7 +202,7 @@ class NormalField(Optimizable):
             self.vc[0, ntor:2*ntor+1] = v[0:ntor+1]
             self.vc[1:, :] = np.array(v[ntor+1:ntor+1+mpol*(2*ntor+1)]).reshape(mpol, ntor * 2 + 1)
             self.vs[0, ntor+1:2*ntor+1] = v[ntor+1+mpol*(2*ntor+1):2*ntor+1+mpol*(2*ntor+1)]
-            self.vs[1:, :] = np.array(v[2*ntor+1+mpol*(2*ntor+1):2*ntor+1+2*mpol*(2*ntor+1)]).reshape(mpol, 2*ntor+1)
+            self.vs[1:, :] = np.array(v[2*ntor+1+mpol*(2*ntor+1):2*ntor+1+2*mpol*(2*ntor+1)]).reshape(mpol, 2*ntor+1)        
 
     def fixed_range(self, mmin, mmax, nmin, nmax, fixed=True):
         """
