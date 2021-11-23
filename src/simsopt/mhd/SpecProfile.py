@@ -24,7 +24,7 @@ from simsopt._core.optimizable import Optimizable
 
 logger = logging.getLogger('[{}]'.format(MPI.COMM_WORLD.Get_rank()) + __name__)
 
-# Here I have BdotN subclass optimizable
+# Here I have SpecProfile subclass optimizable
 class SpecProfile(Optimizable):
 
     def __init__(self, Nvol, Lfreebound, ProfileName):

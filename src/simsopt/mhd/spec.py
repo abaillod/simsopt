@@ -260,6 +260,7 @@ class Spec(Optimizable):
         logger.info("Preparing to run SPEC.")
 
         # Read last converged case for correct initial guess
+        print("reading initial guess...")
         self.init( self.fname_initial_guess )
 
         self.counter += 1

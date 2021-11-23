@@ -431,7 +431,8 @@ class Dofs:
                 x[j] = x0[j] + steps[j]
                 self.set(x)
                 # fplus = np.array([f() for f in self.funcs])
-                fplus = self.f()
+                fd_bool = True
+                fplus = self.f(fd_bool)
                 if jac is None:
                     # After the first function evaluation, we now know
                     # the size of the Jacobian.
