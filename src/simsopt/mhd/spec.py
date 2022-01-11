@@ -480,23 +480,23 @@ class Residue(Optimizable):
         """
         Run Spec if needed, find the periodic field line, and return the residue
         """
-        if not self.mpi.proc0_groups:
-            logger.info("This proc is skipping Residue.J() since it is not a group leader.")
-            return
-
         if self.need_to_run_code:
-            self.spec.run(fd_bool)
-            specb = pyoculus.problems.SPECBfield(self.spec.results, self.vol)
-            # Set nrestart=0 because otherwise the random guesses in
-            # pyoculus can cause examples/tests to be
-            # non-reproducible.
-            fp = pyoculus.solvers.FixedPoint(specb, {'theta': self.theta, 'nrestart': 0},
-                                             integrator_params={'rtol': self.rtol})
-            self.fixed_point = fp.compute(self.s_guess,
-                                          sbegin=self.s_min,
-                                          send=self.s_max,
-                                          pp=self.pp, qq=self.qq)
             self.need_to_run_code = False
+            self.spec.run(fd_bool)
+            if self.mpi.proc0_groups:
+                # Only the group leader actually computes the residue.
+                specb = pyoculus.problems.SPECBfield(self.spec.results, self.vol)
+                # Set nrestart=0 because otherwise the random guesses in
+                # pyoculus can cause examples/tests to be
+                # non-reproducible.
+                fp = pyoculus.solvers.FixedPoint(specb, {'theta': self.theta, 'nrestart': 0},
+                                                 integrator_params={'rtol': self.rtol})
+                self.fixed_point = fp.compute(self.s_guess,
+                                              sbegin=self.s_min,
+                                              send=self.s_max,
+                                              pp=self.pp, qq=self.qq)
+            # Broadcast, so all procs would raise ObjectiveFailure together:
+            self.fixed_point = self.mpi.comm_groups.bcast(self.fixed_point, root=0)
 
         if self.fixed_point is None:
             raise ObjectiveFailure("Residue calculation failed")
