@@ -384,9 +384,9 @@ class Spec(Optimizable):
         if self.results.output.ForceErr > self.tolerance:
             raise ObjectiveFailure("SPEC didn't converge")
 
+        fname_step = 'step_tmp.sp'
         if not fd_bool:
             self.step_counter += 1
-            fname_step = 'step_tmp.sp'
 
             if  self.mpi.proc0_world:
                 copyfile( filename+'.sp.end', fname_step )
