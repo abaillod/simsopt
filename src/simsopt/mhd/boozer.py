@@ -27,11 +27,17 @@ except ImportError as e:
     logger.debug(str(e))
 
 from .vmec import Vmec
+from .spec import Spec
 from .._core.optimizable import Optimizable
 from .._core.types import RealArray
 
-__all__ = ['Boozer', 'Quasisymmetry']
+try:
+    import py_spec
+except ImportError as e:
+    py_spec = None
+    logger.debug(str(e))
 
+__all__ = ['Boozer', 'Quasisymmetry']
 
 class Boozer(Optimizable):
     """
@@ -45,7 +51,7 @@ class Boozer(Optimizable):
     """
 
     def __init__(self,
-                 equil: Vmec,
+                 equil,
                  mpol: int = 32,
                  ntor: int = 32,
                  verbose: bool = False) -> None:
@@ -60,8 +66,6 @@ class Boozer(Optimizable):
         self.equil = equil
         self.mpol = mpol
         self.ntor = ntor
-        self.bx = booz_xform.Booz_xform()
-        self.bx.verbose = verbose
         self.s = set()
         self.need_to_run_code = True
         self._calls = 0  # For testing, keep track of how many times we call bx.run()
@@ -74,6 +78,7 @@ class Boozer(Optimizable):
         self.mpi = None
         if equil is not None:
             self.mpi = equil.mpi
+
         if equil is not None:
             super().__init__(depends_on=[equil])
         else:
@@ -101,9 +106,61 @@ class Boozer(Optimizable):
             if new_s < 0 or new_s > 1:
                 raise ValueError("Normalized toroidal flux values s must lie"
                                  "in the interval [0, 1]")
-        logger.info("Adding entries to Boozer registry: {}".format(ss))
-        self.s = self.s.union(ss)
-        self.need_to_run_code = True
+        logger.info("Adding entries to BoozerVmec registry: {}".format(ss))
+        new_s = self.s.union(ss)
+
+        if new_s != self.s:
+            self.s = new_s
+            self.need_to_run_code = True   
+        else:
+            logger.info("Entries remain unchanged. No need to rerun code.") 
+    
+    def run(self):
+        """
+        Run booz_xform on all the surfaces that have been registered.
+
+        This function definition depends on which kind of equilibrium 
+        is considered
+        """
+
+        raise NotImplementedError
+
+
+
+
+
+class BoozerVmec(Boozer):
+    """
+    This class handles the transformation to Boozer coordinates for a Vmec
+    equilibrium.
+
+    A Boozer instance maintains a set "s", which is a registry of the
+    surfaces on which other objects want Boozer-coordinate data. When
+    the run() method is called, the Boozer transformation is carried
+    out on all these surfaces. The registry can be cleared at any time
+    by setting the s attribute to {}.
+    """
+
+    def __init__(self,
+                 equil: Vmec,
+                 mpol: int = 32,
+                 ntor: int = 32,
+                 verbose: bool = False) -> None:
+        """
+        Constructor
+        """
+        if not isinstance( equil, Vmec ):
+            raise ValueError("BoozerVmec requires a Vmec equilibrium.")
+
+
+        if booz_xform is None:
+            raise RuntimeError(
+                "To use a Boozer object, the booz_xform package "
+                "must be installed. Run 'pip install -v booz_xform'")
+
+        self.bx = booz_xform.Booz_xform()
+        self.bx.verbose = verbose
+        super().__init__(equil, mpol, ntor, verbose)
 
     def run(self):
         """
@@ -121,122 +178,352 @@ class Boozer(Optimizable):
         s = sorted(list(self.s))
         logger.info("Preparing to run Boozer transformation. Registry:{}".format(s))
 
-        if isinstance(self.equil, Vmec):
-            self.equil.run()
-            wout = self.equil.wout  # Shorthand
+        self.equil.run()
+        wout = self.equil.wout  # Shorthand
 
-            # Get the half-grid points that are closest to the requested values
-            ns = wout.ns
-            s_full = np.linspace(0, 1, ns)
-            ds = s_full[1] - s_full[0]
-            s_half = s_full[1:] - 0.5 * ds
+        # Get the half-grid points that are closest to the requested values
+        ns = wout.ns
+        s_full = np.linspace(0, 1, ns)
+        ds = s_full[1] - s_full[0]
+        s_half = s_full[1:] - 0.5 * ds
 
-            # For each float value of s at which the Boozer results
-            # have been requested, we need to find the corresponding
-            # radial index of the booz_xform results. The result is
-            # self.s_to_index. Computing this is tricky because
-            # multiple values of s may get rounded to the same
-            # half-grid surface. The solution here is done in two
-            # steps. First we find a map from each float value of s to
-            # the corresponding radial index among all half-grid
-            # surfaces (even ones where we won't compute the Boozer
-            # transformation.) This resulting map is
-            # s_to_index_all_surfs. In a second step,
-            # s_to_index_all_surfs and the list of compute_surfs are
-            # used to find s_to_index.
+        # For each float value of s at which the Boozer results
+        # have been requested, we need to find the corresponding
+        # radial index of the booz_xform results. The result is
+        # self.s_to_index. Computing this is tricky because
+        # multiple values of s may get rounded to the same
+        # half-grid surface. The solution here is done in two
+        # steps. First we find a map from each float value of s to
+        # the corresponding radial index among all half-grid
+        # surfaces (even ones where we won't compute the Boozer
+        # transformation.) This resulting map is
+        # s_to_index_all_surfs. In a second step,
+        # s_to_index_all_surfs and the list of compute_surfs are
+        # used to find s_to_index.
 
-            compute_surfs = []
-            s_to_index_all_surfs = dict()
-            self.s_used = dict()
-            for ss in s:
-                index = np.argmin(np.abs(s_half - ss))
-                compute_surfs.append(index)
-                s_to_index_all_surfs[ss] = index
-                self.s_used[ss] = s_half[index]
+        compute_surfs = []
+        s_to_index_all_surfs = dict()
+        self.s_used = dict()
+        for ss in s:
+            index = np.argmin(np.abs(s_half - ss))
+            compute_surfs.append(index)
+            s_to_index_all_surfs[ss] = index
+            self.s_used[ss] = s_half[index]
 
-            # Eliminate any duplicates
-            compute_surfs = sorted(list(set(compute_surfs)))
-            logger.info("compute_surfs={}".format(compute_surfs))
-            logger.info("s_to_index_all_surfs={}".format(s_to_index_all_surfs))
-            self.s_to_index = dict()
-            for ss in s:
-                self.s_to_index[ss] = compute_surfs.index(s_to_index_all_surfs[ss])
-            logger.info("s_to_index={}".format(self.s_to_index))
+        # Eliminate any duplicates
+        compute_surfs = sorted(list(set(compute_surfs)))
+        logger.info("compute_surfs={}".format(compute_surfs))
+        logger.info("s_to_index_all_surfs={}".format(s_to_index_all_surfs))
+        self.s_to_index = dict()
+        for ss in s:
+            self.s_to_index[ss] = compute_surfs.index(s_to_index_all_surfs[ss])
+        logger.info("s_to_index={}".format(self.s_to_index))
 
-            # Transfer data in memory from VMEC to booz_xform
-            self.bx.asym = bool(wout.lasym)
-            self.bx.nfp = wout.nfp
+        # Transfer data in memory from VMEC to booz_xform
+        self.bx.asym = bool(wout.lasym)
+        self.bx.nfp = wout.nfp
 
-            self.bx.mpol = wout.mpol
-            self.bx.ntor = wout.ntor
-            self.bx.mnmax = wout.mnmax
-            self.bx.xm = wout.xm
-            self.bx.xn = wout.xn
-            print('mnmax:', wout.mnmax, ' len(xm):', len(wout.xm), ' len(xn):', len(wout.xn))
-            print('mnmax_nyq:', wout.mnmax_nyq, ' len(xm_nyq):', len(wout.xm_nyq), ' len(xn_nyq):', len(wout.xn_nyq))
-            assert len(wout.xm) == wout.mnmax
-            assert len(wout.xn) == wout.mnmax
-            assert len(self.bx.xm) == self.bx.mnmax
-            assert len(self.bx.xn) == self.bx.mnmax
+        self.bx.mpol = wout.mpol
+        self.bx.ntor = wout.ntor
+        self.bx.mnmax = wout.mnmax
+        self.bx.xm = wout.xm
+        self.bx.xn = wout.xn
+        print('mnmax:', wout.mnmax, ' len(xm):', len(wout.xm), ' len(xn):', len(wout.xn))
+        print('mnmax_nyq:', wout.mnmax_nyq, ' len(xm_nyq):', len(wout.xm_nyq), ' len(xn_nyq):', len(wout.xn_nyq))
+        assert len(wout.xm) == wout.mnmax
+        assert len(wout.xn) == wout.mnmax
+        assert len(self.bx.xm) == self.bx.mnmax
+        assert len(self.bx.xn) == self.bx.mnmax
 
-            self.bx.mpol_nyq = int(wout.xm_nyq[-1])
-            self.bx.ntor_nyq = int(wout.xn_nyq[-1] / wout.nfp)
-            self.bx.mnmax_nyq = wout.mnmax_nyq
-            self.bx.xm_nyq = wout.xm_nyq
-            self.bx.xn_nyq = wout.xn_nyq
-            assert len(wout.xm_nyq) == wout.mnmax_nyq
-            assert len(wout.xn_nyq) == wout.mnmax_nyq
-            assert len(self.bx.xm_nyq) == self.bx.mnmax_nyq
-            assert len(self.bx.xn_nyq) == self.bx.mnmax_nyq
+        self.bx.mpol_nyq = int(wout.xm_nyq[-1])
+        self.bx.ntor_nyq = int(wout.xn_nyq[-1] / wout.nfp)
+        self.bx.mnmax_nyq = wout.mnmax_nyq
+        self.bx.xm_nyq = wout.xm_nyq
+        self.bx.xn_nyq = wout.xn_nyq
+        assert len(wout.xm_nyq) == wout.mnmax_nyq
+        assert len(wout.xn_nyq) == wout.mnmax_nyq
+        assert len(self.bx.xm_nyq) == self.bx.mnmax_nyq
+        assert len(self.bx.xn_nyq) == self.bx.mnmax_nyq
 
-            if wout.lasym:
-                rmns = wout.rmns
-                zmnc = wout.zmnc
-                lmnc = wout.lmnc
-                bmns = wout.bmns
-                bsubumns = wout.bsubumns
-                bsubvmns = wout.bsubvmns
-            else:
-                # For stellarator-symmetric configs, the asymmetric
-                # arrays have not been initialized.
-                arr = np.array([[]])
-                rmns = arr
-                zmnc = arr
-                lmnc = arr
-                bmns = arr
-                bsubumns = arr
-                bsubvmns = arr
-
-            # For quantities that depend on radius, booz_xform handles
-            # interpolation and discarding the rows of zeros:
-            self.bx.init_from_vmec(wout.ns,
-                                   wout.iotas,
-                                   wout.rmnc,
-                                   rmns,
-                                   zmnc,
-                                   wout.zmns,
-                                   lmnc,
-                                   wout.lmns,
-                                   wout.bmnc,
-                                   bmns,
-                                   wout.bsubumnc,
-                                   bsubumns,
-                                   wout.bsubvmnc,
-                                   bsubvmns)
-            self.bx.compute_surfs = compute_surfs
-            self.bx.mboz = self.mpol
-            self.bx.nboz = self.ntor
-
+        if wout.lasym:
+            rmns = wout.rmns
+            zmnc = wout.zmnc
+            lmnc = wout.lmnc
+            bmns = wout.bmns
+            bsubumns = wout.bsubumns
+            bsubvmns = wout.bsubvmns
         else:
-            # Cases for SPEC, GVEC, etc could be added here.
-            raise ValueError("equil is not an equilibrium type supported by"
-                             "Boozer")
+            # For stellarator-symmetric configs, the asymmetric
+            # arrays have not been initialized.
+            arr = np.array([[]])
+            rmns = arr
+            zmnc = arr
+            lmnc = arr
+            bmns = arr
+            bsubumns = arr
+            bsubvmns = arr
+
+        # For quantities that depend on radius, booz_xform handles
+        # interpolation and discarding the rows of zeros:
+        self.bx.init_from_vmec(wout.ns,
+                                wout.iotas,
+                                wout.rmnc,
+                                rmns,
+                                zmnc,
+                                wout.zmns,
+                                lmnc,
+                                wout.lmns,
+                                wout.bmnc,
+                                bmns,
+                                wout.bsubumnc,
+                                bsubumns,
+                                wout.bsubvmnc,
+                                bsubvmns)
+        self.bx.compute_surfs = compute_surfs
+        self.bx.mboz = self.mpol
+        self.bx.nboz = self.ntor
 
         logger.info("About to call booz_xform.Booz_xform.run().")
         self.bx.run()
         self._calls += 1
         logger.info("Returned from calling booz_xform.Booz_xform.run().")
         self.need_to_run_code = False
+
+class BoozerSpec( Boozer ):
+    """
+    This class handles the transformation to Boozer coordinates 
+    for a SPEC equilibrium.
+
+    A Boozer instance maintains a set "s", which is a registry of the
+    surfaces on which other objects want Boozer-coordinate data. When
+    the run() method is called, the Boozer transformation is carried
+    out on all these surfaces. The registry can be cleared at any time
+    by setting the s attribute to {}.
+
+    Args:
+        equil: instance of the simsopt.mhd.spec.Spec class
+        mpol: Poloidal resolution
+        ntor: Toroidal resolution
+        verbose
+    """
+
+    def __init__(self,
+                 equil: Spec,
+                 mpol: int = 32,
+                 ntor: int = 32,
+                 verbose: bool = False) -> None:
+        """
+        Constructor
+        """
+        if not isinstance( equil, Spec ):
+            raise ValueError("SpecBoozer requires a Spec equilibrium.")
+        
+        self.equil = equil
+        if self.equil.inputlist.lsvdiota!=1:
+            raise ValueError('Lsvdiota should be 1 in SPEC input file')
+        if not self.equil.inputlist.ltransform:
+            raise ValueError('Ltransform should be true in SPEC input file')
+        
+
+        if booz_xform is None:
+            raise RuntimeError(
+                "To use a Boozer object, the booz_xform package "
+                "must be installed. Run 'pip install -v booz_xform'")
+
+        # SPEC magnetic field is discontinuous across its ideal interfaces. Two
+        # instances of booz_xform are thus required; one for the inner surfaces
+        # (0) and one for the outer ones (1)
+        self.bx = []
+        for innout in range(0,2):
+            self.bx.append(booz_xform.Booz_xform())
+            self.bx[innout].verbose = verbose
+
+        super().__init__( equil, mpol, ntor, verbose )
+
+    def register(self, s: Union[float, Iterable[float]]) -> None:
+        """
+        This function is called by objects that depend on this Boozer
+        object, to indicate that they will want Boozer data on the
+        given set of surfaces.
+
+        Args:
+            s: Interface index, with value within 1 and Mvol.
+        """
+        # Force input surface data to be a set:
+        try:
+            ss = set(s)
+        except:
+            ss = {s}
+
+        # Test input
+        for new_s in ss:
+            if new_s < 1 or new_s > self.equil.nvol:
+                raise ValueError("Interface index must lie within 1 and Nvol")
+            
+        logger.info("Adding entries to SpecBoozer registry: {}".format(ss))
+        new_s = self.s.union(ss)
+
+        if new_s != self.s:
+            self.s = new_s
+            self.need_to_run_code = True
+        else:
+            logger.info("Entries remain unchanged. No need to rerun code.")
+
+    def run(self):
+        """
+        Run booz_xform on the inner and outer side of all surfaces 
+        that have been registered.
+        """
+        if py_spec is None:
+            raise ImportError('py_spec is required to run booz_xform on SPEC equilibria')
+
+        if (self.mpi is not None) and (not self.mpi.proc0_groups):
+            logger.info("This proc is skipping Boozer.run since it is not a group leader.")
+            return
+
+        if not self.need_to_run_code:
+            logger.info("Boozer.run() called but no need to re-run Boozer transformation.")
+            return
+
+        s = np.array(sorted(list(self.s)))
+        logger.info("Preparing to run Boozer transformation. Registry:{}".format(s))
+
+        # Run SPEC if needed
+        self.equil.run()
+        results = self.equil.results
+
+        # Test if SPEC has been run with Ltransform
+        if not results.input.diagnostics.Ltransform:
+            raise RuntimeError("SPEC needs to be run with Ltransform=True")
+
+        if not results.input.physics.Istellsym:
+            raise RuntimeError("Boozer transform not implemented for \
+                               stellarator asymmetrix cases")
+
+        # Loop on inner and outer side of interfaces
+        for innout in range(0,2):
+            # If fixed-boundary calculation, no information on field outside of
+            # the plasma boundary.
+            if (innout==1) and (s[-1]==self.equil.nvol) \
+                and (self.equil.inputlist.lfreebound==0):
+                s = s[:-1]
+                
+            # innout refers to inner (0) and outer (1) side of interface. The 
+            # volume label is thus:
+            lvol = s - 1 + innout
+            # The outer surface is the inner boundary of the volume; thus
+            innout_vol = 1-innout
+
+            # Initialize Boozer...
+            # General
+            self.bx[innout].asym = not self.equil.inputlist.istellsym
+            self.bx[innout].nfp = self.equil.inputlist.nfp
+            self.bx[innout].toroidal_flux = self.equil.inputlist.phiedge
+            self.bx[innout].compute_surfs = np.arange(0,len(s))
+            self.bx[innout].aspect = np.nan # not used
+
+
+            # Fourier
+            mpol_spec = self.equil.inputlist.mpol
+            ntor_spec = self.equil.inputlist.ntor
+            self.bx[innout].mpol = mpol_spec + 1
+            self.bx[innout].ntor = ntor_spec
+            self.bx[innout].mnmax = ntor_spec + 1 + mpol_spec * (2 * ntor_spec + 1)
+
+            # Nyquist freuqencies
+            self.bx[innout].mpol_nyq = self.bx[innout].mpol
+            self.bx[innout].ntor_nyq = self.bx[innout].ntor
+            self.bx[innout].mnmax_nyq = self.bx[innout].mnmax
+
+            # Boundaries
+            self.bx[innout].xm = results.output.im
+            self.bx[innout].xn = results.output.in_
+            self.bx[innout].mboz = np.max(self.bx[innout].xm)
+            self.bx[innout].nboz = np.max(np.abs(self.bx[innout].xn))
+            self.bx[innout].xm_nyq = results.output.im
+            self.bx[innout].xn_nyq = results.output.in_
+
+            # If fixed-boundary calculation, outer side of plasma boundary
+            # should be excluded.
+            # Computational boundary is always excluded, as it is 
+            # not necessarily a magnetic surface
+            ns_in = s.size
+            self.bx[innout].ns_in = ns_in
+            self.bx[innout].s_in = np.array( results.output.tflux[s-1] )
+
+            # Rotational transform
+            self.bx[innout].iota = np.array( results.output.lambdamn[innout_vol,lvol,0] )
+
+            # Geometry
+            self.bx[innout].rmnc = np.array( results.output.Rbc[s,:] ).transpose()
+            self.bx[innout].zmns = np.array( results.output.Zbs[s,:] ).transpose()
+            self.bx[innout].rmns = np.array( results.output.Rbs[s,:] ).transpose()
+            self.bx[innout].zmnc = np.array( results.output.Zbc[s,:] ).transpose()
+
+            # Straight field line transform
+            lmns = np.zeros([self.bx[innout].mnmax,ns_in])
+            lmnc = np.zeros([self.bx[innout].mnmax,ns_in])
+            xms = results.output.ims
+            xns = results.output.ins
+            for ii, (mm, nn) in enumerate(zip(self.bx[innout].xm, self.bx[innout].xn)):
+                if mm==0 and nn==0:
+                    lmns[ii,:] = 0
+                    continue
+                ind = np.intersect1d( np.where(mm==xms), np.where(nn==xns) )
+                if ind.size==1:
+                    ind = ind[0]
+                    lmns[ii,:] = results.output.lambdamn[1-innout,s-1+innout,ind]
+            self.bx[innout].lmns = lmns
+            self.bx[innout].lmnc = lmnc
+
+            # Covariant magnetic field, Fourier space
+            self.bx[innout].bsubumnc = np.array(results.output.Btemn[lvol, innout_vol, :]).transpose()
+            self.bx[innout].bsubumns = np.array(results.output.Btomn[lvol, innout_vol, :]).transpose()
+            self.bx[innout].bsubvmnc = np.array(results.output.Bzemn[lvol, innout_vol, :]).transpose()
+            self.bx[innout].bsubvmns = np.array(results.output.Bzomn[lvol, innout_vol, :]).transpose()
+
+            # Evaluate Fourier harmonics of modulus of B
+            sarr = np.array([-innout*2+1])
+            tarr = np.linspace(0,2*np.pi,results.grid.Nt,endpoint=False)
+            zarr = np.linspace(0,2*np.pi/self.bx[innout].nfp,results.grid.Nt,endpoint=False)
+
+            Bmnc = np.zeros((self.bx[innout].mnmax, ns_in))
+            Bmns = np.zeros((self.bx[innout].mnmax, ns_in))
+            for ii, vv in enumerate(lvol):
+                Bcontrav = results.get_B( vv, sarr=sarr, tarr=tarr, zarr=zarr )
+                g = results.metric( vv, sarr, tarr, zarr, input1D=False )
+                modB = np.squeeze( results.get_modB( Bcontrav, g ) )
+
+                Bmnc[:,ii], Bmns[:,ii], _im, _in = py_spec.spec_fft( 
+                    tarr, zarr, modB, mpol_spec, ntor_spec, output='1D' )
+            self.bx[innout].bmnc = Bmnc
+            self.bx[innout].bmns = Bmns
+            
+            logger.info("About to call boox_xform.Boox_xform.run().")
+            self.bx[innout].run()
+            self._calls += 1
+            logger.info("Returned from calling booz_xform.Booz_xform.run().")
+            self.need_to_run_code = False
+
+
+
+
+
+
+            
+
+            
+
+
+
+
+
+
+
+
+
+
+
 
 
 class Quasisymmetry(Optimizable):

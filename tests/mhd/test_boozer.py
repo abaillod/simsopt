@@ -20,7 +20,7 @@ except ImportError as e:
 
 from simsopt._core.optimizable import Optimizable
 if MPI is not None:
-    from simsopt.mhd.boozer import Boozer, Quasisymmetry  # , booz_xform_found
+    from simsopt.mhd.boozer import Boozer, BoozerVmec, Quasisymmetry  # , booz_xform_found
     from simsopt.mhd.vmec import Vmec  # , vmec_found
 from . import TEST_DIR
 
@@ -135,7 +135,7 @@ class QuasisymmetryTests(unittest.TestCase):
                      "vmec or booz_xform python package not found")
     def test_boozer_circular_tokamak(self):
         v = Vmec(os.path.join(TEST_DIR, "input.circular_tokamak"))
-        b = Boozer(v, mpol=48, ntor=0)
+        b = BoozerVmec(v, mpol=48, ntor=0)
 
         # Register a QA target at s = 0.5:
         qs1 = Quasisymmetry(b, 0.5, 1, 0)
@@ -202,7 +202,7 @@ class QuasisymmetryTests(unittest.TestCase):
                      "vmec or booz_xform python package not found")
     def test_boozer_li383(self):
         v = Vmec(os.path.join(TEST_DIR, "wout_li383_low_res_reference.nc"))
-        b = Boozer(v, mpol=32, ntor=16)
+        b = BoozerVmec(v, mpol=32, ntor=16)
         qs1 = Quasisymmetry(b, [0.0, 1.0], 1, 0)
         residuals = qs1.J()
         np.testing.assert_allclose(b.bx.compute_surfs, [0, 14])

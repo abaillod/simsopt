@@ -2,7 +2,7 @@
 
 import os
 from simsopt.util import MpiPartition
-from simsopt.mhd import Vmec, Boozer, Quasisymmetry
+from simsopt.mhd import Vmec, BoozerVmec, Quasisymmetry
 from simsopt.objectives import LeastSquaresProblem
 from simsopt.solve import least_squares_mpi_solve
 
@@ -34,7 +34,7 @@ vmec.verbose = mpi.proc0_world
 surf = vmec.boundary
 
 # Configure quasisymmetry objective:
-boozer = Boozer(vmec)
+boozer = BoozerVmec(vmec)
 boozer.bx.verbose = mpi.proc0_world
 qs = Quasisymmetry(boozer,
                    0.5,  # Radius to target

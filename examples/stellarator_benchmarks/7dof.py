@@ -2,7 +2,7 @@
 
 import os
 from simsopt.util import MpiPartition, log
-from simsopt.mhd import Vmec, Boozer, Quasisymmetry
+from simsopt.mhd import Vmec, BoozerVmec, Quasisymmetry
 from simsopt.objectives import LeastSquaresProblem
 from simsopt.solve import least_squares_mpi_solve
 from simsopt.geo import SurfaceGarabedian
@@ -32,7 +32,7 @@ surf.fix("Delta(1,0)")  # toroidally-averaged major radius
 surf.fix("Delta(0,0)")  # toroidally-averaged minor radius
 
 # Define objective function:
-boozer = Boozer(vmec, mpol=32, ntor=16)
+boozer = BoozerVmec(vmec, mpol=32, ntor=16)
 qs = Quasisymmetry(boozer,
                    1.0,  # Radius to target
                    1, 0,  # (M, N) you want in |B|

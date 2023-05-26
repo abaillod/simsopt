@@ -359,7 +359,7 @@ directory. Next, this alternative quasisymmetry objective can be
 created as follows::
 
   # Configure quasisymmetry objective:
-  boozer = Boozer(vmec)
+  boozer = BoozerVmec(vmec)
   qs = Quasisymmetry(boozer,
                      0.5, # Radius to target
                      1, 0) # (M, N) you want in |B|
@@ -368,8 +368,8 @@ There are several adjustable options, the details of which can be
 found in the API documentation for :obj:`~simsopt.mhd.Boozer`
 and :obj:`~simsopt.mhd.Quasisymmetry`. The numerical resolution
 of the Boozer-coordinate transformation can be adjusted by passing
-parameters to the :obj:`~simsopt.mhd.Boozer` constructor, as in
-``Boozer(vmec, mpol=64, ntor=32)``. The second argument to
+parameters to the :obj:`~simsopt.mhd.BoozerVmec` constructor, as in
+``BoozerVmec(vmec, mpol=64, ntor=32)``. The second argument to
 ``Quasisymmetry`` above sets the quasisymmetry objective to be
 evaluated at normalized toroidal flux of 0.5, but you are free to
 provide different values.  Or, a list of values can be provided to

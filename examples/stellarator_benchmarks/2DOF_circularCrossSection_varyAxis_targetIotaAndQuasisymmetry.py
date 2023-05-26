@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from simsopt.mhd import Vmec, Boozer, Quasisymmetry
+from simsopt.mhd import Vmec, BoozerVmec, Quasisymmetry
 from simsopt.objectives import LeastSquaresProblem
 from simsopt.solve import least_squares_serial_solve
 import os
@@ -22,7 +22,7 @@ vmec.boundary.unfix("rc(0,1)")
 vmec.boundary.unfix("zs(0,1)")
 
 # Define objective function:
-boozer = Boozer(vmec, mpol=32, ntor=16)
+boozer = BoozerVmec(vmec, mpol=32, ntor=16)
 qs = Quasisymmetry(boozer,
                    1.0,  # Radius to target
                    1, 0,  # (M, N) you want in |B|

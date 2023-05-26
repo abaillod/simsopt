@@ -14,7 +14,7 @@ except ImportError as e:
 if MPI is not None:
     try:
         from simsopt.mhd.vmec import Vmec
-        from simsopt.mhd.boozer import Boozer
+        from simsopt.mhd.boozer import BoozerVmec
     except ImportError as e:
         Vmec = None
         Boozer = None
@@ -309,8 +309,8 @@ class BoozerRadialInterpolant(BoozerMagneticField):
     Throughout stellarator symmetry is assumed.
 
     Args:
-        equil: instance of :class:`simsopt.mhd.vmec.Vmec` or :class:`simsopt.mhd.boozer.Boozer`.
-            If it is an instance of :class:`simsopt.mhd.boozer.Boozer`, the
+        equil: instance of :class:`simsopt.mhd.vmec.Vmec` or :class:`simsopt.mhd.boozer.BoozerVmec`.
+            If it is an instance of :class:`simsopt.mhd.boozer.BoozerVmec`, the
             `compute_surfs` needs to include all of the grid points in the
             half-radius grid of the corresponding Vmec equilibrium.
         order: (int) order for radial interpolation. Must satisfy 1 <= order <= 5.
@@ -343,7 +343,7 @@ class BoozerRadialInterpolant(BoozerMagneticField):
 
         if isinstance(equil, Vmec):
             equil.run()
-            self.booz = Boozer(equil, mpol, ntor)
+            self.booz = BoozerVmec(equil, mpol, ntor)
             self.booz.register(self.booz.equil.s_half_grid)
             self.booz.run()
         elif isinstance(equil, Boozer):

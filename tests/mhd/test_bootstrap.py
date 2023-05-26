@@ -6,7 +6,7 @@ from simsopt.mhd.bootstrap import compute_trapped_fraction, \
     j_dot_B_Redl, RedlGeomVmec, RedlGeomBoozer, VmecRedlBootstrapMismatch
 from simsopt.mhd.profiles import ProfilePolynomial
 from simsopt.mhd.vmec import Vmec
-from simsopt.mhd.boozer import Boozer
+from simsopt.mhd.boozer import BoozerVmec
 from simsopt.util.constants import ELEMENTARY_CHARGE
 from . import TEST_DIR
 
@@ -533,7 +533,7 @@ class BootstrapTests(unittest.TestCase):
         """
         filename = os.path.join(TEST_DIR, 'wout_ITERModel_reference.nc')
         vmec = Vmec(filename)
-        booz = Boozer(vmec, mpol=32, ntor=0)
+        booz = BoozerVmec(vmec, mpol=32, ntor=0)
         # The surfaces used here are exact points on vmec's half grid,
         # so there are no issues with radial interpolation.
         surfaces = vmec.s_half_grid[10:-1:10]
@@ -565,7 +565,7 @@ class BootstrapTests(unittest.TestCase):
         """
         filename = os.path.join(TEST_DIR, 'wout_LandremanPaul2021_QH_reactorScale_lowres_reference.nc')
         vmec = Vmec(filename)
-        booz = Boozer(vmec, mpol=16, ntor=16)
+        booz = BoozerVmec(vmec, mpol=16, ntor=16)
         # The surfaces used here are exact points on vmec's half grid,
         # so there are no issues with radial interpolation.
         surfaces = vmec.s_half_grid[10:-1:10]
@@ -605,7 +605,7 @@ class BootstrapTests(unittest.TestCase):
         helicity_n = 0
         filename = os.path.join(TEST_DIR, 'wout_ITERModel_reference.nc')
         vmec = Vmec(filename)
-        boozer = Boozer(vmec, mpol=32, ntor=0)
+        boozer = BoozerVmec(vmec, mpol=32, ntor=0)
         jdotB_sfincs = np.array([-577720.30718026, -737097.14851563, -841877.1731213, -924690.37927967,
                                  -996421.14965534, -1060853.54247997, -1120000.15051496, -1175469.30096585,
                                  -1228274.42232883, -1279134.94084881, -1328502.74017954, -1376746.08281939,
@@ -687,7 +687,7 @@ class BootstrapTests(unittest.TestCase):
         # filename = os.path.join(TEST_DIR, 'wout_new_QA_aScaling.nc')  # High resolution
         filename = os.path.join(TEST_DIR, 'wout_LandremanPaul2021_QA_reactorScale_lowres_reference.nc')
         vmec = Vmec(filename)
-        boozer = Boozer(vmec, mpol=16, ntor=16)
+        boozer = BoozerVmec(vmec, mpol=16, ntor=16)
         surfaces = np.linspace(0.025, 0.975, 39)
         jdotB_sfincs = np.array([-2164875.78234086, -3010997.004258, -3586912.40439179, -4025873.78974165,
                                  -4384855.40656673, -4692191.91608418, -4964099.33007648, -5210508.61474677,
@@ -738,7 +738,7 @@ class BootstrapTests(unittest.TestCase):
         #filename = os.path.join(TEST_DIR, 'wout_new_QH_aScaling.nc')  # High resolution
         filename = os.path.join(TEST_DIR, 'wout_LandremanPaul2021_QH_reactorScale_lowres_reference.nc')
         vmec = Vmec(filename)
-        boozer = Boozer(vmec, mpol=16, ntor=16)
+        boozer = BoozerVmec(vmec, mpol=16, ntor=16)
         surfaces = np.linspace(0.025, 0.975, 39)
 
         jdotB_sfincs = np.array([-1086092.9561775, -1327299.73501589, -1490400.04894085, -1626634.32037339,
