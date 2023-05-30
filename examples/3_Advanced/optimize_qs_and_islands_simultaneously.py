@@ -4,7 +4,7 @@ import os
 import numpy as np
 
 from simsopt.util import log, MpiPartition
-from simsopt.mhd import Vmec, Spec, Boozer, Quasisymmetry
+from simsopt.mhd import Vmec, Spec, BoozerVmec, Quasisymmetry
 from simsopt.mhd.spec import Residue
 from simsopt.objectives import LeastSquaresProblem
 from simsopt.solve import least_squares_mpi_solve
@@ -42,7 +42,7 @@ surf.fixed_range(mmin=0, mmax=3,
 surf.fix("rc(0,0)")  # Major radius
 
 # Configure quasisymmetry objective:
-qs = Quasisymmetry(Boozer(vmec),
+qs = Quasisymmetry(BoozerVmec(vmec),
                    0.5,  # Radius to target
                    1, 0)  # (M, N) you want in |B|
 

@@ -13,6 +13,8 @@ try:
 except ImportError as e:
     vmec = None 
 
+from simsopt.mhd.spec import Spec
+
 try:
     from mpi4py import MPI
 except ImportError as e:
@@ -20,7 +22,7 @@ except ImportError as e:
 
 from simsopt._core.optimizable import Optimizable
 if MPI is not None:
-    from simsopt.mhd.boozer import Boozer, BoozerVmec, Quasisymmetry  # , booz_xform_found
+    from simsopt.mhd.boozer import Boozer, BoozerVmec, BoozerSpec, Quasisymmetry  # , booz_xform_found
     from simsopt.mhd.vmec import Vmec  # , vmec_found
 from . import TEST_DIR
 
@@ -76,6 +78,94 @@ class MockBoozer(Optimizable):
     def run(self):
         pass
 
+
+class BoozerSpecTests(unittest.TestCase):
+    def test_init(self):
+        """
+        Test BoozerSpec initialization
+        """
+
+        s = Spec(os.path.join(TEST_DIR, "RotatingEllipse_Nvol8.sp"))
+
+        s.inputlist.lsvdiota=0
+        s.inputlist.ltransform=True
+        with self.assertRaises( ValueError ):
+            BoozerSpec(s, mpol=12, ntor=10 )
+        s.inputlist.lsvdiota=1
+        s.inputlist.ltransform=False
+        with self.assertRaises( ValueError ):
+            BoozerSpec(s, mpol=-1, ntor=10 )
+
+        s.inputlist.lsvdiota=1
+        s.inputlist.ltransform=True
+        with self.assertRaises( ValueError ):
+            BoozerSpec(s, mpol=-1, ntor=10 )
+
+        with self.assertRaises( ValueError ):
+            BoozerSpec(s, mpol=12, ntor=-1 )
+
+        # Now this one should not raise any exception:
+        b = BoozerSpec(s, mpol=12, ntor=10)
+        self.assertEqual(b.ntor, 10)
+        self.assertEqual(b.mpol, 12)
+
+    
+    def test_register(self):
+        """
+        Test capability to select SPEC interfaces on which Boozer transformation
+        has to be applied
+        """
+
+
+        s = Spec(os.path.join(TEST_DIR, "RotatingEllipse_Nvol8.sp"))
+        
+        s.inputlist.lsvdiota=1
+        s.inputlist.ltransform=True
+        b = BoozerSpec(s, mpol=12, ntor=10)
+
+        with self.assertRaises( ValueError ):
+            b.register( 0 )
+
+        # SPEC inputfile describe an 8-volume free-boundary equilibrium
+        # Plasma boundary has thus index 7. Anything above this should raise
+        # an exception
+        with self.assertRaises(ValueError):
+            b.register( 8 )
+
+        b.register( [1,3,4,7] )
+        self.assertTrue( b.s==set({1,3,4,7}) )
+
+    def test_boozer_transform(self):
+        """
+        Test that the output of booz_xform
+        """
+
+        # Bug in SPEC requires to be in inputfile directory...
+        os.chdir(TEST_DIR)
+        s = Spec("RotatingEllipse_Nvol8.sp")
+        s.inputlist.lsvdiota=1
+        s.inputlist.ltransform=True
+        b = BoozerSpec(s, mpol=12, ntor=10)
+        b.register( [3] )
+
+        b.run()
+
+        places = 5
+        self.assertAlmostEqual( b.bx[0].Boozer_G[0], 3.411345, places=places )
+        self.assertAlmostEqual( b.bx[0].bmnc_b[0,0], 0.34586, places=places )
+        self.assertAlmostEqual( b.bx[0].bmnc_b[3,0],1.1256020843555033e-06, places=places )
+        self.assertAlmostEqual( b.bx[0].gmnc_b[0,0], 28.561898960211124, places=places)
+        self.assertAlmostEqual( b.bx[0].gmnc_b[1,0], 1.8107389943385708, places=places)
+        self.assertAlmostEqual( b.bx[0].zmns_b[21,0],-0.32379618, places=places)
+
+        self.assertAlmostEqual( b.bx[1].Boozer_G[0], 3.41133798, places=places )
+        self.assertAlmostEqual( b.bx[1].bmnc_b[0,0], 0.34586192317005393, places=places )
+        self.assertAlmostEqual( b.bx[1].bmnc_b[3,0], 1.1387726596219679e-06, places=places )
+        self.assertAlmostEqual( b.bx[1].gmnc_b[0,0], 28.56227633545841, places=places)
+        self.assertAlmostEqual( b.bx[1].gmnc_b[1,0], 1.810139037861596, places=places)
+        self.assertAlmostEqual( b.bx[1].zmns_b[21,0],-0.32394202402596406, places=places)
+
+    
 
 @unittest.skipIf(MPI is None, "mpi4py python package is not found")
 class QuasisymmetryTests(unittest.TestCase):

@@ -323,7 +323,10 @@ class BoozerSpec( Boozer ):
             raise ValueError('Lsvdiota should be 1 in SPEC input file')
         if not self.equil.inputlist.ltransform:
             raise ValueError('Ltransform should be true in SPEC input file')
-        
+        if mpol<0:
+            raise ValueError('Mpol should be greater or equal than 0')
+        if ntor<0:
+            raise ValueError('Ntor should be greater or equal than 0')
 
         if booz_xform is None:
             raise RuntimeError(
