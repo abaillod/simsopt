@@ -17,6 +17,7 @@ from .._core.optimizable import Optimizable
 from .._core.util import Struct
 from ..util.constants import ELEMENTARY_CHARGE
 from .profiles import Profile, ProfilePolynomial
+from simsopt.mhd.boozer import BoozerVmec, BoozerSpec
 
 __all__ = ['compute_trapped_fraction', 'j_dot_B_Redl', 'RedlGeomVmec',
            'RedlGeomBoozer', 'VmecRedlBootstrapMismatch']
@@ -172,7 +173,7 @@ def compute_trapped_fraction(modB, sqrtg):
 
 def j_dot_B_Redl(ne, Te, Ti, Zeff, helicity_n=None, s=None, G=None, R=None, iota=None,
                  epsilon=None, f_t=None, psi_edge=None, nfp=None,
-                 geom=None, plot=False):
+                 geom=None, plot=False, innout=None):
     r"""
     Compute the bootstrap current (specifically
     :math:`\left<\vec{J}\cdot\vec{B}\right>`) using the formulae in
@@ -232,6 +233,8 @@ def j_dot_B_Redl(ne, Te, Ti, Zeff, helicity_n=None, s=None, G=None, R=None, iota
             matters only if ``helicity_n`` is not 0.
         geom: Optional. An instance of either :obj:`RedlGeomVmec` or :obj:`RedlGeomBoozer`.
         plot: Whether to make a plot of many of the quantities computed.
+        innout: Used for SPEC equilibria. innout=0 considers the inner face of an interface, 
+              while innout=1 considers its outer face.
 
     Returns:
         Tuple containing
@@ -241,6 +244,18 @@ def j_dot_B_Redl(ne, Te, Ti, Zeff, helicity_n=None, s=None, G=None, R=None, iota
         - **details**: An object holding intermediate quantities from the computation
           (e.g. L31, L32, alpha) as attributes
     """
+    if innout is not None and geom.vmec is not None:
+        raise ValueError('innout input only compatible with geometry specified by a spec equilibrium')
+    
+    if innout is None and geom.spec is not None:
+        raise ValueError('need to provide innout when specifying geometry by a spec instance')
+    
+    if innout<0 or innout >1:
+        raise ValueError('innout should either be 0 or 1.')
+
+    if geom.spec is not None and geom.vmec is not None:
+        raise ValueError('Geometry can only be specified by either a spec or a vmec instance, but not both')
+
     if geom is not None:
         if (s is not None) or (G is not None) or (R is not None) \
            or (iota is not None) or (epsilon is not None) or (psi_edge is not None) \
@@ -407,7 +422,7 @@ class RedlGeomVmec(Optimizable):
     This class evaluates geometry data needed to evaluate the Redl
     bootstrap current formula from a vmec configuration, such as the
     effective fraction of trapped particles.  The advantage of this
-    class over :obj:`RedlGeomBoozer` is that no transformation to
+    class over :obj:`RedlGeomBoozerVmec` is that no transformation to
     Boozer coordinates is involved in this method. However, the
     approach here may over-estimate ``epsilon``.
 
@@ -514,8 +529,96 @@ class RedlGeomVmec(Optimizable):
         return data
 
 
+class RedlGeomSpec(Optimizable):
+    """
+    This class evaluates geometry data needed to evaluate the Redl
+    bootstrap current formula from a spec configuration, such as the
+    effective fraction of trapped particles.  The advantage of this
+    class over :obj:`RedlGeomBoozerSpec` is that no transformation to
+    Boozer coordinates is involved in this method. However, the
+    approach here may over-estimate ``epsilon``.
+
+    Args:
+        spec: An instance of :obj:`simsopt.mhd.vmec.Spec`.
+        isurf: A 1D array surface indices, between 1 and Nvol
+        ntheta: Number of grid points in the poloidal angle for evaluating geometric quantities in the Redl formulae.
+        nphi: Number of grid points in the toroidal angle for evaluating geometric quantities in the Redl formulae.
+        plot: Whether to make a plot of many of the quantities computed.
+    """
+
+    def __init__(self, spec, isurf=None, ntheta=64, nphi=65, plot=False):
+        self.spec = spec
+        self.surfaces = isurf
+        self.ntheta = ntheta
+        self.nphi = nphi
+        self.plot = plot
+        super().__init__(depends_on=[spec])
+
+    def __call__(self):
+        """
+        Evaluate the geometric quantities needed for the Redl bootstrap
+        current formula.
+        """
+        self.spec.run()
+
+        if self.surfaces is None:
+            self.surfaces = np.arange(1,self.spec.nvol+1)
+
+        isurf = self.surfaces
+        surfaces = isurf
+        ntheta = self.ntheta
+        nphi = self.nphi
+        ns = self.surfaces.size
+        nfp = self.spec.inputlist.nfp
+        psi_edge = self.spec.inputlist.phiedge
+        results = self.spec.results
+
+        if not results.input.diagnostics.Ltransform:
+            raise RuntimeError("Need iota. Please set Ltransform=True")
+        
+        data = [Struct()]*2
+        theta1d = np.linspace(0, 2 * np.pi, self.ntheta, endpoint=False)
+        phi1d = np.linspace(0, 2 * np.pi / nfp, nphi, endpoint=False)
+        phi2d, theta2d = np.meshgrid(phi1d, theta1d)
+        for innout in range(0,2):
+            lvol = isurf -1 +innout
+            innout_vol = abs(innout-1)
+            iota = np.array( results.output.lambdamn[innout_vol,lvol,0] )
+
+            G = results.output.Bzemn[lvol,innout_vol,0]*2*np.pi
+            I = results.output.Btemn[lvol,innout_vol,0]*2*np.pi
+
+            sqrtg = np.zeros((self.ntheta,ns))
+            modB = np.zeros((self.ntheta,ns))
+            sarr = np.array([1 - 2*innout])
+            for ii, ss in enumerate(isurf):
+                lvol = ss - 1 + innout
+
+                _, _, sqrtg[:,ii], g = \
+                    results.get_grid_and_jacobian_and_metric(
+                    lvol, sarr=sarr, tarr=theta1d, zarr=phi1d
+                    )  
+                Bcontrav = results.get_B(
+                    lvol=lvol, sarr=sarr, tarr=theta1d, zarr=phi1d
+                )
+                modB[:,ii] = results.get_modB( Bcontrav, g )
+            
+            Bmin, Bmax, epsilon, fsa_B2, fsa_1overB, f_t = \
+                compute_trapped_fraction(modB, sqrtg)
+            R = (G + iota * I) * fsa_1overB
+
+
+            variables = ['nfp', 'surfaces', 'Bmin', 'Bmax', 'epsilon', 'fsa_B2', 'fsa_1overB', 'f_t',
+                        'modB', 'sqrtg', 'G', 'R', 'I', 'iota', 'psi_edge', 'theta1d', 'phi1d']
+            for v in variables:
+                data[innout].__setattr__(v, eval(v))
+
+        return data
+
+
 class RedlGeomBoozer(Optimizable):
     """
+    Parent class for RedlGeomBoozerVmec and RedlGeomBoozerSpec
     Evaluate geometry data needed to evaluate the Redl bootstrap
     current formula, such as the effective fraction of trapped
     particles.  In the approach here, Boozer coordinates are computed,
@@ -523,23 +626,54 @@ class RedlGeomBoozer(Optimizable):
     obtain an effectively perfectly quasisymmetric configuration.
 
     Args:
-        booz: An instance of :obj:`simsopt.mhd.boozer.Boozer`
-        surfaces: A 1D array with the values of normalized toroidal flux
-            to use for the bootstrap current calculation.
+        depends_on: A list of instances of :obj:`simsopt.mhd.boozer.Boozer`
+        surfaces: If BoozerVmec: A 1D array with the values of normalized toroidal flux
+            to use for the bootstrap current calculation. 
+            If BoozerSpec: surface index (between 1 and Nvol)
         helicity_n: 0 for quasi-axisymmetry, or +/- 1 for quasi-helical symmetry.
             This quantity is used to discard symmetry-breaking :math:`B_{mn}` harmonics.
         ntheta: Number of grid points in the poloidal angle for evaluating geometric quantities in the Redl formulae.
         plot: Make a plot of many of the quantities computed.
     """
 
-    def __init__(self, booz, surfaces, helicity_n, ntheta=64, plot=False):
-        booz.register(surfaces)
-        self.booz = booz
+    def __init__(self, depends_on, surfaces, helicity_n, ntheta, plot):
         self.surfaces = surfaces
         self.helicity_n = helicity_n
         self.ntheta = ntheta
         self.plot = plot
-        super().__init__(depends_on=[booz])
+        super().__init__(depends_on=depends_on)
+
+    def __call__(self):
+        """
+        Evaluate the geometric quantities needed for the Redl bootstrap
+        current formula.
+        """
+        raise NotImplementedError('Not implemented. Either use RedlGeomBoozerVmec or RedlGeomBoozerSpec classes.')
+
+
+class RedlGeomBoozerVmec( RedlGeomBoozer ):
+    """
+    Evaluate geometry data needed to evaluate the Redl bootstrap
+    current formula, such as the effective fraction of trapped
+    particles, for a Vmec equilibrium.  
+    In the approach here, Boozer coordinates are computed,
+    and all the symmetry-breaking Bmn harmonics are discarded to
+    obtain an effectively perfectly quasisymmetric configuration.
+
+    Args:
+        booz: An instance of :obj:`simsopt.mhd.boozer.BoozerVmec`
+        surfaces: A 1D array with the values of normalized toroidal flux
+            to use for the bootstrap current calculation. 
+        helicity_n: 0 for quasi-axisymmetry, or +/- 1 for quasi-helical symmetry.
+            This quantity is used to discard symmetry-breaking :math:`B_{mn}` harmonics.
+        ntheta: Number of grid points in the poloidal angle for evaluating geometric quantities in the Redl formulae.
+        plot: Make a plot of many of the quantities computed.
+    """
+    def __init__(self, booz, surfaces, helicity_n, ntheta=64, plot=False):
+        booz.register(surfaces)
+        self.booz = booz
+        super().__init__(depends_on=[booz], surfaces=surfaces, 
+                         helicity_n=helicity_n, ntheta=ntheta, plot=plot)
 
     def __call__(self):
         """
@@ -554,7 +688,8 @@ class RedlGeomBoozer(Optimizable):
         ns = len(surfaces)
         ntheta = self.ntheta
         theta1d = np.linspace(0, 2 * np.pi, ntheta, endpoint=False)
-        vmec = self.booz.equil
+
+        vmec = self.booz.vmec
         self.vmec = vmec
         nfp = vmec.wout.nfp
         psi_edge = -vmec.wout.phi[-1] / (2 * np.pi)
@@ -608,9 +743,11 @@ class RedlGeomBoozer(Optimizable):
 
         # Pack data into a return structure
         data = Struct()
-        data.vmec = vmec
+        data.vmec = self.vmec
+
         variables = ['nfp', 'surfaces', 'Bmin', 'Bmax', 'epsilon', 'fsa_B2', 'fsa_1overB', 'f_t',
-                     'modB', 'sqrtg', 'G', 'R', 'I', 'iota', 'psi_edge', 'theta1d']
+                    'modB', 'sqrtg', 'G', 'R', 'I', 'iota', 'psi_edge', 'theta1d']
+            
         for v in variables:
             data.__setattr__(v, eval(v))
 
@@ -630,6 +767,89 @@ class RedlGeomBoozer(Optimizable):
             plt.show()
 
         return data
+
+class RedlGeomBoozerSpec( RedlGeomBoozer ):
+    """
+    Evaluate geometry data needed to evaluate the Redl bootstrap
+    current formula, such as the effective fraction of trapped
+    particles for a SPEC equilibrium.
+    In the approach here, Boozer coordinates are computed,
+    and all the symmetry-breaking Bmn harmonics are discarded to
+    obtain an effectively perfectly quasisymmetric configuration.
+
+    Args:
+        booz: An instance of of :obj:`simsopt.mhd.boozer.BoozerSpec`
+        isurf: A 1D array with the values of the surface index of which SPEC
+            interface should be taken into account in the calculation. Must be
+            between 1 and Nvol.
+        helicity_n: 0 for quasi-axisymmetry, or +/- 1 for quasi-helical symmetry.
+            This quantity is used to discard symmetry-breaking :math:`B_{mn}` harmonics.
+        ntheta: Number of grid points in the poloidal angle for evaluating geometric quantities in the Redl formulae.
+        plot: Make a plot of many of the quantities computed.
+    """
+    def __init__(self, booz, isurf, helicity_n, ntheta=64, plot=False):
+        booz.register( booz )
+        self.booz = booz
+        super().__init__(depends_on=booz, surfaces=isurf,
+                         helicity_n=helicity_n, ntheta=ntheta, plot=plot)
+
+    def __call__(self):
+        """
+        Evaluate the geometric quantities needed for the Redl bootstrap
+        current formula.
+
+        Output:
+          data: a list of size 2 with structures containing the geometric 
+                quantities. data[0] refers to the inner side of the interfaces,
+                while data[1] refers to the outer side.
+        """
+
+        # Run booz_xform
+        self.booz.run()
+
+        # Prepare output data
+        data = [Struct()]*2
+
+        spec = self.booz.equil
+        nfp = spec.results.input.physics.nfp
+        isurf = self.surfaces
+        nsurf = isurf.size
+        psi_edge = spec.results.input.physics.phiedge
+        surfaces = spec.results.output.tflux[isurf-1]
+
+        theta1d = np.linspace(0, 2 * np.pi, self.ntheta, endpoint=False)
+        for innout in range(0,2):
+            G = self.booz[innout].G
+            I = self.booz[innout].I
+            iota = self.booz[innout].iota
+
+            sqrtg = np.zeros((self.ntheta,nsurf))
+            modB = np.zeros((self.ntheta,nsurf))
+            sarr = np.array([1 - 2*innout])
+            zarr = np.array([0])
+            for ii, ss in enumerate(isurf):
+                lvol = ss - 1 + innout
+
+                _, _, sqrtg[:,ii], g = \
+                    spec.results.get_grid_and_jacobian_and_metric(
+                    lvol, sarr=sarr, tarr=theta1d, zarr=zarr
+                    )  
+                Bcontrav = spec.results.get_B(
+                    lvol=lvol, sarr=sarr, tarr=theta1d, zarr=zarr
+                )
+                modB[:,ii] = spec.results.get_modB( Bcontrav, g )
+            
+            Bmin, Bmax, epsilon, fsa_B2, fsa_1overB, f_t = \
+                compute_trapped_fraction(modB, sqrtg)
+            R = (G + iota * I) * fsa_1overB
+            variables = ['nfp', 'surfaces', 'Bmin', 'Bmax', 'epsilon', 'fsa_B2', 'fsa_1overB', 'f_t',
+                        'modB', 'sqrtg', 'G', 'R', 'I', 'iota', 'psi_edge', 'theta1d']
+                
+            for v in variables:
+                data[innout].__setattr__(v, eval(v))
+        
+        return data
+
 
 
 class VmecRedlBootstrapMismatch(Optimizable):
@@ -652,7 +872,7 @@ class VmecRedlBootstrapMismatch(Optimizable):
     Physics of Plasmas 28, 022502 (2021).
 
     Args:
-        geom: An instance of either :obj:`RedlGeomVmec` or :obj:`RedlGeomBoozer`.
+        geom: An instance of either :obj:`RedlGeomVmec` or :obj:`RedlGeomBoozerVmec`.
         ne: A :obj:`~simsopt.mhd.profiles.Profile` object representing the electron density profile.
         Te: A :obj:`~simsopt.mhd.profiles.Profile` object representing the electron temperature profile.
         Ti: A :obj:`~simsopt.mhd.profiles.Profile` object representing the ion temperature profile.
@@ -746,3 +966,111 @@ class VmecRedlBootstrapMismatch(Optimizable):
         squares of the residuals.
         """
         return np.sum(self.residuals() ** 2)
+
+
+class SpecRedlBootstrapMismatch( Optimizable ):
+    r"""
+    This class is used to obtain quasi-axisymmetric or quasi-helically
+    symmetric SPEC configurations with self-consistent bootstrap
+    current. This class represents the objective function
+
+    .. math::
+
+        f = \frac{\sum_{l=1}^{N_{vol}}\left[\left<\vec{J}\cdot\vec{B}\right>^{spec}_{l,-}
+                                - \left<\vec{J}\cdot\vec{B}\right>^{Redl}_{l,-} \right]^2}
+                 {\sum_{l=1}^{N_{vol}}\left[\left<\vec{J}\cdot\vec{B}\right>^{spec}_{l,-}
+                                + \left<\vec{J}\cdot\vec{B}\right>^{Redl}_{l,-} \right]^2}
+            + \frac{\sum_{l=1}^{N_{vol}}\left[\left<\vec{J}\cdot\vec{B}\right>^{spec}_{l,+}
+                                - \left<\vec{J}\cdot\vec{B}\right>^{Redl}_{l,+} \right]^2}
+                 {\sum_{l=1}^{N_{vol}}\left[\left<\vec{J}\cdot\vec{B}\right>^{spec}_{l,+}
+                                + \left<\vec{J}\cdot\vec{B}\right>^{Redl}_{l,+} \right]^2}
+
+    where :math:`\left<\vec{J}\cdot\vec{B}\right>^{spec}_{l,\pm}` is the
+    bootstrap current in a SPEC equilibrium at interface $l$, on the inner(-)
+    and outer (+) side of the interface, and
+    :math:`\left<\vec{J}\cdot\vec{B}\right>^{Redl}_{l,\pm}` is the bootstrap
+    current on the same location computed from the fit formulae in Redl et al,
+    Physics of Plasmas 28, 022502 (2021).
+
+    Args:
+        geom: An instance of either :obj:`RedlGeomSpec` or :obj:`RedlGeomBoozerSpec`.
+        ne: A :obj:`~simsopt.mhd.profiles.ProfileSpec` object representing the electron density profile.
+        Te: A :obj:`~simsopt.mhd.profiles.ProfileSpec` object representing the electron temperature profile.
+        Ti: A :obj:`~simsopt.mhd.profiles.ProfileSpec` object representing the ion temperature profile.
+        Zeff: A :obj:`~simsopt.mhd.profiles.ProfileSpec` object representing the :math:`Z_{eff}` profile.
+            A single number can also be provided, in which case a constant :math:`Z_{eff}` profile will be used.
+        helicity_n: 0 for quasi-axisymmetry, or +/- 1 for quasi-helical symmetry.
+    """
+
+    def __init__( self, geom, ne, Te, Ti, Zeff, helicity_n, logfile=None):
+        if not isinstance(Zeff, Profile):
+            # If we get here then Zeff is presumably a number. Convert it to a constant profile.
+            Zeff = ProfilePolynomial([Zeff])
+        self.geom = geom
+        self.ne = ne
+        self.Te = Te
+        self.Ti = Ti
+        self.Zeff = Zeff
+        self.helicity_n = helicity_n
+        self.iteration = 0
+        self.logfile = logfile
+
+        super().__init__(depends_on=[geom, ne, Te, Ti, Zeff])
+
+    
+    def residuals(self):
+        r"""
+        This function returns a 1d array of residuals, useful for
+        representing the objective function as a nonlinear
+        least-squares problem.  This is the function handle to use
+        with a
+        :obj:`~simsopt.objectives.least_squares.LeastSquaresProblem`.
+
+        Specifically, this function returns
+
+        .. math::
+
+            R_j = \frac{\left[\left<\vec{J}\cdot\vec{B}\right>^{spec}_{j,-}
+                   - \left<\vec{J}\cdot\vec{B}\right>^{Redl}_{j,-} \right]^2}
+                    {\sum_{l=1}^{N_{vol}}\left[\left<\vec{J}\cdot\vec{B}\right>^{spec}_{l,-}
+                   + \left<\vec{J}\cdot\vec{B}\right>^{Redl}_{l,-} \right]^2}
+                + \frac{\left[\left<\vec{J}\cdot\vec{B}\right>^{spec}_{j,+}
+                   - \left<\vec{J}\cdot\vec{B}\right>^{Redl}_{j,+} \right]^2}
+                    {\sum_{l=1}^{N_{vol}}\left[\left<\vec{J}\cdot\vec{B}\right>^{spec}_{l,+}
+                   + \left<\vec{J}\cdot\vec{B}\right>^{Redl}_{l,+} \right]^2}
+
+        where :math:`j` and :math:`k` range over the surfaces for the
+        supplied ``geom`` object (typically from 1 to Nvol for a SPEC 
+        configuration), :math:`j, k \in \{1, 2, \ldots, N\}`
+        and :math:`N` is the number of surfaces for the supplied
+        ``geom`` object. The vector of residuals returned has
+        length :math:`N`.
+
+        The sum of the squares of these residuals equals the objective
+        function. The total scalar objective is approximately
+        independent of the number of surfaces.
+        """
+        data = self.geom()
+        fsa_B2 = data['fsa_B2']
+        j_dot_B_Redl = np.array([])
+        j_dot_B_spec = np.array([])
+        for innout in range(0,2):
+            # <j.B>_spec is  mu * <B^2>
+            lvol = self.geom.surfaces -1 + innout
+            mu = self.geom.spec.results.output.mu[lvol]
+            np.append(j_dot_B_spec, mu*fsa_B2)
+
+            # <j.BZ_redl obtained with:
+            jdotb, _ = j_dot_B_Redl(self.ne,
+                                    self.Te,
+                                    self.Ti,
+                                    self.Zeff,
+                                    self.helicity_n,
+                                    geom=self.geom[innout])
+            
+            np.append(j_dot_B_Redl, jdotb )
+
+        return (j_dot_B_spec[0]-j_dot_B_Redl[0]) / np.sqrt(np.sum((j_dot_B_spec[0]-j_dot_B_Redl[0])**2)) \
+             + (j_dot_B_spec[1]-j_dot_B_Redl[1]) / np.sqrt(np.sum((j_dot_B_spec[1]-j_dot_B_Redl[1])**2))
+
+            
