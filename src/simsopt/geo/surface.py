@@ -21,7 +21,7 @@ import simsoptpp as sopp
 from .._core.optimizable import Optimizable
 from .._core.dev import SimsoptRequires
 from .plotting import fix_matplotlib_3d
-from .._core.json import GSONable, GSONDecoder
+from .._core.json import GSONable
 
 __all__ = ['Surface', 'signed_distance_from_surface', 'SurfaceClassifier', 'SurfaceScaled', 'best_nphi_over_ntheta']
 
@@ -75,7 +75,8 @@ class Surface(Optimizable):
             nphi, ntheta, nfp=nfp, range=range)
         return cls(quadpoints_phi=quadpoints_phi,
                    quadpoints_theta=quadpoints_theta, nfp=nfp, **kwargs)
-
+    
+    @staticmethod
     def get_quadpoints(nphi=None,
                        ntheta=None,
                        range=None,
@@ -109,7 +110,8 @@ class Surface(Optimizable):
         """
         return (Surface.get_phi_quadpoints(nphi=nphi, range=range, nfp=nfp),
                 Surface.get_theta_quadpoints(ntheta=ntheta))
-
+    
+    @staticmethod
     def get_theta_quadpoints(ntheta=None):
         r"""
         Sets the theta grid points for Surface subclasses.
@@ -124,7 +126,8 @@ class Surface(Optimizable):
         if ntheta is None:
             ntheta = 62
         return list(np.linspace(0.0, 1.0, ntheta, endpoint=False))
-
+    
+    @staticmethod
     def get_phi_quadpoints(nphi=None, range=None, nfp=1):
         r"""
         Sets the phi grid points for Surface subclasses.
@@ -434,12 +437,25 @@ class Surface(Optimizable):
     
     @SimsoptRequires(get_context is not None, "is_self_intersecting requires ground package")
     @SimsoptRequires(contour_self_intersects is not None, "is_self_intersecting requires the bentley_ottmann package")
-    def is_self_intersecting(self, angle=0.):
-        """
-        
+    def is_self_intersecting(self, angle=0., thetas=None):
+        r"""
+        This function computes a cross section of self at the input cylindrical angle.  Then,
+        approximating the cross section as a piecewise linear polyline, the Bentley-Ottmann algorithm
+        is used to check for self-intersecting segments of the cross section.  NOTE: if this function returns False,
+        the surface may still be self-intersecting away from angle.
+
+        Args:
+            angle: the cylindrical angle at which we would like to check whether the surface is self-intersecting.  Note that a
+                   surface might not be self-intersecting at a given angle, but may be self-intersecting elsewhere.  To be certain
+                   that the surface is not self-intersecting, it is recommended to run this check at multiple angles.  Also note
+                   that angle is assumed to be in radians, and not divided by 2*pi.
+            thetas: the number of uniformly spaced points to compute poloidally in a cross section.  If None, then there will be
+                    surface.quadpoints_theta.size uniformly space points in the cross section.
+        Returns:
+            True if surface is self-intersecting at angle, else False.
         """
 
-        cs = self.cross_section(angle)
+        cs = self.cross_section(angle, thetas=thetas)
         R = np.sqrt(cs[:, 0]**2 + cs[:, 1]**2)
         Z = cs[:, 2]
     
@@ -505,7 +521,7 @@ class Surface(Optimizable):
         Return the minor radius of the surface using the formula
 
         .. math::
-            R_{\text{minor}} &= \sqrt{ \overline{A} / \pi }
+            R_{\text{minor}} = \sqrt{ \overline{A} / \pi }
 
         where :math:`\overline{A}` is the average cross sectional area.
 
@@ -825,6 +841,23 @@ class Surface(Optimizable):
             function_interpolated[iphi, :] = f(theta_evaluate[iphi, :])
 
         return function_interpolated
+    
+    @property
+    def deduced_range(self):
+        """
+        The quadpoints of a surface can be anything, but are often set to 
+        'full torus', 'field period' or 'half period'. 
+        Since this is not stored in the object, but often useful to know
+        this function deduces the range from the quadpoints
+        """
+        if np.isclose(self.quadpoints_phi[-1], 1-1/len(self.quadpoints_phi), atol=1e-10):
+            return Surface.RANGE_FULL_TORUS
+        elif self.quadpoints_phi[0] == 0:
+            return Surface.RANGE_FIELD_PERIOD
+        else:
+            return Surface.RANGE_HALF_PERIOD
+
+
 
 
 def signed_distance_from_surface(xyz, surface):
