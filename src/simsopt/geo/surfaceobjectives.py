@@ -941,7 +941,7 @@ class DifferentialVolume(Optimizable):
     def compute(self):
         if self.boozer_surface.need_to_run_code:
             res = self.boozer_surface.res
-            res = self.boozer_surface.run_code(res['type'], res['iota'], G=res['G'])
+            res = self.boozer_surface.run_code(res['iota'], G=res['G'])
         else:
             res = self.boozer_surface.res
 
