@@ -6,6 +6,8 @@ from jax.numpy import sin, cos, asarray
 from jax import vjp
 from .jit import jit
 
+__all__ = ['CurveCorrected']
+
 @jit
 def apply_curve_correction_jax(shiftangles, g):
     shift = shiftangles[:3]

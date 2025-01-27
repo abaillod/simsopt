@@ -8,9 +8,12 @@ from .._core.util import RealArray
 
 import simsoptpp as sopp
 from simsopt.geo.curve import Curve
+import numpy as np
+from randomgen import PCG64
 
-__all__ = ['GaussianSampler', 'PerturbationSample', 'CurvePerturbed']
-
+__all__ = ['GaussianSampler', 'PerturbationSample', 'CurvePerturbed',
+           'perturb_coil_curve', 'perturb_coil_curve_localized',
+           'ShapeGradientPerturbationSample', 'perturb_coil_curve_aligned']
 
 @dataclass
 class GaussianSampler(GSONable):
@@ -208,3 +211,221 @@ class CurvePerturbed(sopp.Curve, Curve):
     def dgammadashdashdash_by_dcoeff_vjp(self, v):
         return self.curve.dgammadashdashdash_by_dcoeff_vjp(v)
 
+
+def perturb_coil_curve(original_curve, seed, sigma=0.01, length_scale=0.1):
+    rg = np.random.Generator(PCG64(seed, inc=0))
+    sampler = GaussianSampler(original_curve.quadpoints, sigma, length_scale, n_derivs=1)
+    perturbation_sample = PerturbationSample(sampler, randomgen=rg)
+    perturbed_curve = CurvePerturbed(original_curve, perturbation_sample)
+    return perturbed_curve
+
+
+import sympy
+from math import comb
+
+def _build_window_and_derivs(points, amplitude, s0, sigma_local, n_derivs):
+    """
+    Returns a list of length (n_derivs+1), [w^(0)(s), w^(1)(s), ..., w^(n_derivs)(s)]
+    where w(s) = amplitude * exp(-0.5*((s - s0)/sigma_local)^2).
+
+    Each w^(d)(s) is shape (n_points,).
+    We'll do symbolic differentiation so that the product rule is consistent.
+    """
+    s = sympy.Symbol("s", real=True)
+    w_sym = amplitude * sympy.exp(-0.5 * ((s - s0)/sigma_local)**2)
+
+    w_syms = [w_sym.diff(s, i) for i in range(n_derivs+1)]
+    w_funcs = [sympy.lambdify(s, expr, "numpy") for expr in w_syms]
+
+    out = []
+    for wf in w_funcs:
+        out.append(wf(points))  # shape (len(points),)
+    return out
+
+
+class LocalizedPerturbationSample(PerturbationSample):
+    """
+    A specialized PerturbationSample that multiplies the base random field
+    by a local Gaussian window, including the product rule for derivatives.
+    """
+
+    def __init__(self, sampler, randomgen=None, sample=None,
+                 s0=0.5, sigma_local=0.01, amplitude=1.0):
+        """
+        :param sampler: The base GaussianSampler (global random field).
+        :param s0: center of the local bump
+        :param sigma_local: width of the local Gaussian in parameter space
+        :param amplitude: optional scale factor for the bump
+        """
+        super().__init__(sampler, randomgen, sample)
+        self.s0 = s0
+        self.sigma_local = sigma_local
+        self.amplitude = amplitude
+
+        # Precompute w(s), w'(s), etc. up to sampler.n_derivs
+        self._w_derivs = _build_window_and_derivs(
+            points=self.sampler.points,
+            amplitude=self.amplitude,
+            s0=self.s0,
+            sigma_local=self.sigma_local,
+            n_derivs=self.sampler.n_derivs
+        )
+
+    def __getitem__(self, d):
+        """
+        Return the d-th derivative of [w(s)*g(s)] by the product rule:
+          f(s) = w(s)*g(s)
+          f^(d)(s) = sum_{k=0..d} comb(d,k) * w^(k)(s)* g^(d-k)(s)
+        """
+        if d >= len(self._sample):
+            raise ValueError(f"Requested derivative {d}, but only have up to {len(self._sample)-1}.")
+
+        out = np.zeros_like(self._sample[0])  # shape (npoints, 3)
+        for k in range(d+1):
+            w_k = self._w_derivs[k]            # shape (npoints,)
+            g_dk = self._sample[d-k]          # shape (npoints, 3)
+            c = comb(d, k)
+            out += c*(w_k[:, None]*g_dk)
+        return out
+
+
+def perturb_coil_curve_localized(
+    original_curve,
+    seed=123,
+    s0=0.5,
+    sigma_local=0.01,
+    sigma=0.01,
+    length_scale=0.01,
+    amplitude=1.0,
+    n_derivs=1
+):
+    """
+    Construct a localized random perturbation on `original_curve` by
+    multiplying the global random field by a local Gaussian envelope
+    around s0 (width sigma_local, scale amplitude).
+
+    1) Make a GaussianSampler
+    2) LocalizedPerturbationSample (product rule)
+    3) CurvePerturbed
+    """
+    rg = np.random.Generator(PCG64(seed, inc=0))
+
+    sampler = GaussianSampler(
+        points=original_curve.quadpoints,
+        sigma=sigma,
+        length_scale=length_scale,
+        n_derivs=n_derivs
+    )
+
+    localized_sample = LocalizedPerturbationSample(
+        sampler=sampler,
+        randomgen=rg,
+        s0=s0,
+        sigma_local=sigma_local,
+        amplitude=amplitude
+    )
+
+    perturbed = CurvePerturbed(original_curve, localized_sample)
+    return perturbed
+
+
+
+class ShapeGradientPerturbationSample(PerturbationSample):
+    """
+    A specialized PerturbationSample that uses the shape gradient direction
+    instead of random sampling, multiplied by a local Gaussian window.
+    """
+    def __init__(self, points, shape_gradient, s0=0.5, sigma_local=0.01, amplitude=1.0, n_derivs=1):
+        """
+        Parameters:
+        -----------
+        points : array-like
+            The quadrature points along the curve
+        shape_gradient : array-like
+            The shape gradient direction at each point
+        s0 : float
+            Center of the local bump
+        sigma_local : float
+            Width of the local Gaussian in parameter space
+        amplitude : float
+            Scale factor for the bump
+        n_derivs : int
+            Number of derivatives to compute
+        """
+        # Create a dummy sampler to satisfy PerturbationSample's requirements
+        dummy_sampler = type('DummySampler', (), {'points': points, 'n_derivs': n_derivs})()
+        super().__init__(dummy_sampler)
+        
+        self._sample = [shape_gradient]  # Store shape gradient as the base direction
+        self.s0 = s0
+        self.sigma_local = sigma_local
+        self.amplitude = amplitude
+        
+        # Precompute w(s), w'(s), etc. up to n_derivs
+        self._w_derivs = _build_window_and_derivs(
+            points=points,
+            amplitude=amplitude,
+            s0=s0,
+            sigma_local=sigma_local,
+            n_derivs=n_derivs
+        )
+        
+        # For derivatives of shape gradient, we'll use zeros since we don't have that info
+        for _ in range(n_derivs):
+            self._sample.append(np.zeros_like(shape_gradient))
+            
+    def __getitem__(self, d):
+        """
+        Return the d-th derivative of [w(s)*g(s)] by the product rule:
+          f(s) = w(s)*g(s)
+          f^(d)(s) = sum_{k=0..d} comb(d,k) * w^(k)(s)* g^(d-k)(s)
+        """
+        if d >= len(self._sample):
+            raise ValueError(f"Requested derivative {d}, but only have up to {len(self._sample)-1}.")
+
+        out = np.zeros_like(self._sample[0])  # shape (npoints, 3)
+        for k in range(d+1):
+            w_k = self._w_derivs[k]            # shape (npoints,)
+            g_dk = self._sample[d-k]          # shape (npoints, 3)
+            c = comb(d, k)
+            out += c*(w_k[:, None]*g_dk)
+        return out
+
+
+def perturb_coil_curve_aligned(original_curve, shape_gradient, s0=0.5, 
+                             sigma_local=0.01, amplitude=1.0, n_derivs=1):
+    """
+    Construct a localized perturbation on original_curve that aligns with 
+    the shape gradient direction.
+    
+    Parameters:
+    -----------
+    original_curve : Curve
+        The base curve to perturb
+    shape_gradient : array-like
+        The shape gradient direction at each point
+    s0 : float
+        Center of the local perturbation
+    sigma_local : float
+        Width of the local Gaussian window
+    amplitude : float
+        Scale factor for the perturbation
+    n_derivs : int
+        Number of derivatives to compute
+        
+    Returns:
+    --------
+    CurvePerturbed
+        A new curve with the aligned perturbation applied
+    """
+    aligned_sample = ShapeGradientPerturbationSample(
+        points=original_curve.quadpoints,
+        shape_gradient=shape_gradient,
+        s0=s0,
+        sigma_local=sigma_local,
+        amplitude=amplitude,
+        n_derivs=n_derivs
+    )
+    
+    perturbed = CurvePerturbed(original_curve, aligned_sample)
+    return perturbed
