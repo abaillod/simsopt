@@ -61,10 +61,13 @@ correction_noshift_vjp1 = jit(lambda shiftangles, gamma, v: vjp(lambda y: apply_
 
 class CurveCorrected(sopp.Curve, Curve):
 
-    def __init__(self, curve):
+    def __init__(self, curve, dofs=None):
         self.curve = curve
         sopp.Curve.__init__(self, curve.quadpoints)
-        Curve.__init__(self, x0=np.zeros((6, )), depends_on=[curve])
+        if dofs is None:
+            Curve.__init__(self, x0=np.zeros((6, )), depends_on=[curve])
+        else:
+            Curve.__init__(self, dofs=dofs, depends_on=[curve])
 
     def recompute_bell(self, parent=None):
         self.invalidate_cache()
