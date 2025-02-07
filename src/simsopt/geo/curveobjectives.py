@@ -522,3 +522,5 @@ class LinkingNumber(Optimizable):
     @derivative_dec
     def dJ(self):
         return Derivative({})
+
+

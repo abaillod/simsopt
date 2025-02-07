@@ -648,3 +648,6 @@ def binormal_curvature_pure_centroid(gamma, gammadash, gammadashdash,
 
     tdash *= 1/jnp.linalg.norm(gammadash, axis=1)[:, None]
     return inner(tdash, b)
+
+
+
