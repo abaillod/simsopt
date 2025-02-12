@@ -1063,7 +1063,7 @@ class DifferentialVolume(Optimizable):
         B = B.reshape((nphi, ntheta, 3))
         modB = np.linalg.norm(B, axis=2)
         G = self.boozer_surface.res['G']
-        jac =  G /(modB**2)
+        jac =  np.abs(G) /(modB**2)
 
         self._J = (2*np.pi) * np.mean(jac) 
 
@@ -1099,7 +1099,7 @@ class DifferentialVolume(Optimizable):
         modB = np.linalg.norm(B, axis=2)
         G = self.boozer_surface.res['G']
 
-        return - (4*np.pi * G)/(ntheta * nphi) * B/modB[:,:,None]**4
+        return - (4*np.pi * np.abs(G))/(ntheta * nphi) * B/modB[:,:,None]**4
 
     def dJ_by_dsurfacecoefficients(self):
         """
@@ -1121,7 +1121,7 @@ class DifferentialVolume(Optimizable):
 
         dmodB_dc = (B[:, :, 0, None] * dB_dc[:, :, 0, :] + B[:, :, 1, None] * dB_dc[:, :, 1, :] + B[:, :, 2, None] * dB_dc[:, :, 2, :])/modB[:, :, None]
 
-        dnum_dc = np.mean(- 2 * G * dmodB_dc/(modB[...,None]**3), axis=(0,1 )) 
+        dnum_dc = np.mean(- 2 * np.abs(G) * dmodB_dc/(modB[...,None]**3), axis=(0,1 )) 
         return 2*np.pi * dnum_dc 
 
 class Iotas(Optimizable):

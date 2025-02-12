@@ -3,7 +3,7 @@ from jax import vjp, grad
 from simsopt.geo.jit import jit
 from simsopt._core import Optimizable
 from simsopt._core.derivative import derivative_dec
-from simsopt.geo.curveobjectives import Lp_torsion_pure
+from simsopt.geo.curveobjectives import Lp_torsion_pure, Lp_curvature_pure
 
 __all__ = ['LPBinormalCurvatureStrainPenalty',
            'LPTorsionalStrainPenalty', 'CoilStrain']
@@ -33,7 +33,7 @@ class LPBinormalCurvatureStrainPenalty(Optimizable):
         self.width = width
         self.p = p
         self.threshold = threshold
-        self.J_jax = jit(lambda binorm, gammadash: Lp_torsion_pure(
+        self.J_jax = jit(lambda binorm, gammadash: Lp_curvature_pure(
             binorm, gammadash, p, threshold))
         self.grad0 = jit(lambda binorm, gammadash: grad(
             self.J_jax, argnums=0)(binorm, gammadash))
