@@ -909,6 +909,12 @@ class BoozerSurfaceToroidalFlux(Optimizable):
         Compute the toroidal flux on the surface where
         :math:`\varphi = \texttt{quadpoints_varphi}[\texttt{idx}]`.
         """
+        if self.boozer_surface.need_to_run_code:
+            res = self.boozer_surface.res
+            res = self.boozer_surface.run_code(res['iota'], G=res['G'])
+        else:
+            res = self.boozer_surface.res
+
         self.set_points()
         xtheta = self.surface.gammadash2()[self.idx]
         ntheta = self.surface.gamma().shape[1]
@@ -918,6 +924,12 @@ class BoozerSurfaceToroidalFlux(Optimizable):
     
     @derivative_dec
     def dJ(self):
+        if self.boozer_surface.need_to_run_code:
+            res = self.boozer_surface.res
+            res = self.boozer_surface.run_code(res['iota'], G=res['G'])
+        else:
+            res = self.boozer_surface.res
+
         self.set_points()
         booz_surf = self.boozer_surface #shorthand
         iota = booz_surf.res['iota']
@@ -962,26 +974,26 @@ class BoozerSurfaceToroidalFlux(Optimizable):
         out = (term1+term2)/ntheta
         return out
 
-    def dJ_by_dsurfacecoefficientsdsurfacecoefficients(self):
-        """
-        Calculate the second partial derivatives with respect to the surface coefficients.
-        """
-        ntheta = self.surface.gamma().shape[1]
-        dx_dc = self.surface.dgamma_by_dcoeff()[self.idx]
-        d2A_by_dXdX = self.biotsavart.d2A_by_dXdX().reshape((ntheta, 3, 3, 3))
-        dA_by_dX = self.biotsavart.dA_by_dX()
-        dA_dc = np.sum(dA_by_dX[..., :, None] * dx_dc[..., None, :], axis=1)
-        d2A_dcdc = np.einsum('jkpl,jpn,jkm->jlmn', d2A_by_dXdX, dx_dc, dx_dc)
+    # def dJ_by_dsurfacecoefficientsdsurfacecoefficients(self):
+    #     """
+    #     Calculate the second partial derivatives with respect to the surface coefficients.
+    #     """
+    #     ntheta = self.surface.gamma().shape[1]
+    #     dx_dc = self.surface.dgamma_by_dcoeff()[self.idx]
+    #     d2A_by_dXdX = self.biotsavart.d2A_by_dXdX().reshape((ntheta, 3, 3, 3))
+    #     dA_by_dX = self.biotsavart.dA_by_dX()
+    #     dA_dc = np.sum(dA_by_dX[..., :, None] * dx_dc[..., None, :], axis=1)
+    #     d2A_dcdc = np.einsum('jkpl,jpn,jkm->jlmn', d2A_by_dXdX, dx_dc, dx_dc)
 
-        dgammadash2 = self.surface.gammadash2()[self.idx]
-        dgammadash2_by_dc = self.surface.dgammadash2_by_dcoeff()[self.idx]
+    #     dgammadash2 = self.surface.gammadash2()[self.idx]
+    #     dgammadash2_by_dc = self.surface.dgammadash2_by_dcoeff()[self.idx]
 
-        term1 = np.sum(d2A_dcdc * dgammadash2[..., None, None], axis=-3)
-        term2 = np.sum(dA_dc[..., :, None] * dgammadash2_by_dc[..., None, :], axis=-3)
-        term3 = np.sum(dA_dc[..., None, :] * dgammadash2_by_dc[..., :, None], axis=-3)
+    #     term1 = np.sum(d2A_dcdc * dgammadash2[..., None, None], axis=-3)
+    #     term2 = np.sum(dA_dc[..., :, None] * dgammadash2_by_dc[..., None, :], axis=-3)
+    #     term3 = np.sum(dA_dc[..., None, :] * dgammadash2_by_dc[..., :, None], axis=-3)
 
-        out = (1/ntheta) * np.sum(term1+term2+term3, axis=0)
-        return out
+    #     out = (1/ntheta) * np.sum(term1+term2+term3, axis=0)
+    #     return out
 
 
 class DifferentialVolume(Optimizable):
