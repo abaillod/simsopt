@@ -155,6 +155,7 @@ class CoilStrain(Optimizable):
     def __init__(self, framedcurve, width=1e-3, strain_threshold=2e-3):
         self.framedcurve = framedcurve
         self.width = width
+        self.strain_threshold = strain_threshold
         self.torstrain_jax = jit(lambda torsion, width: torstrain_pure(
             torsion, width))
         self.binormstrain_jax = jit(lambda binorm, width: binormstrain_pure(
@@ -165,7 +166,7 @@ class CoilStrain(Optimizable):
             lambda g: binormstrain_pure(g, width), binorm)[1](v)[0])
         
 
-        self.J_jax = jit(lambda binorm, tor, gammadash: strain_pure(binorm, tor, gammadash, strain_threshold))
+        self.J_jax = jit(lambda binorm, tor, gammadash: strain_pure(binorm, tor, gammadash, self.strain_threshold))
         self.grad0 = jit(lambda binorm, tor, gammadash: grad(self.J_jax, argnums=0)(binorm, tor, gammadash))
         self.grad1 = jit(lambda binorm, tor, gammadash: grad(self.J_jax, argnums=1)(binorm, tor, gammadash))
         self.grad2 = jit(lambda binorm, tor, gammadash: grad(self.J_jax, argnums=2)(binorm, tor, gammadash))
