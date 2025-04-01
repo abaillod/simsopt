@@ -118,6 +118,12 @@ class LPTorsionalStrainPenalty(Optimizable):
     return_fn_map = {'J': J, 'dJ': dJ}
 
 
+
+def strain_pure(binormal_curvature_strain, torsional_strain, gammadash, max_strain):
+    arclength = jnp.linalg.norm(gammadash, axis=1)
+    strain = binormal_curvature_strain + torsional_strain
+    return 1./2. * jnp.mean(arclength * jnp.maximum(strain - max_strain, 0)**2)
+
 class CoilStrain(Optimizable):
     r"""
     This class evaluates the torsional and binormal curvature strains on HTS, based on
@@ -146,7 +152,7 @@ class CoilStrain(Optimizable):
     Those classes also compute gradients whereas this class does not.
     """
 
-    def __init__(self, framedcurve, width=1e-3):
+    def __init__(self, framedcurve, width=1e-3, strain_threshold=2e-3):
         self.framedcurve = framedcurve
         self.width = width
         self.torstrain_jax = jit(lambda torsion, width: torstrain_pure(
@@ -157,6 +163,12 @@ class CoilStrain(Optimizable):
             lambda g: torstrain_pure(g, width), torsion)[1](v)[0])
         self.binormstrain_vjp = jit(lambda binorm, width, v: vjp(
             lambda g: binormstrain_pure(g, width), binorm)[1](v)[0])
+        
+
+        self.J_jax = jit(lambda binorm, tor, gammadash: strain_pure(binorm, tor, gammadash, strain_threshold))
+        self.grad0 = jit(lambda binorm, tor, gammadash: grad(self.J_jax, argnums=0)(binorm, tor, gammadash))
+        self.grad1 = jit(lambda binorm, tor, gammadash: grad(self.J_jax, argnums=1)(binorm, tor, gammadash))
+        self.grad2 = jit(lambda binorm, tor, gammadash: grad(self.J_jax, argnums=2)(binorm, tor, gammadash))
 
         super().__init__(depends_on=[framedcurve])
 
@@ -173,6 +185,41 @@ class CoilStrain(Optimizable):
         the quadpoints defining the filamentary coil. 
         """
         return self.binormstrain_jax(self.framedcurve.frame_binormal_curvature(), self.width)
+    
+    def J(self):
+        binorm = self.binormal_curvature_strain()
+        tor = self.torsional_strain()
+        gdash = self.framedcurve.curve.gammadash()
+
+        return self.J_jax(binorm, tor, gdash)
+
+    @derivative_dec
+    def dJ(self):
+        binorm = self.binormal_curvature_strain()
+        tor = self.torsional_strain()
+        gdash = self.framedcurve.curve.gammadash()
+
+        grad0 = self.grad0(binorm, tor, gdash)
+        grad1 = self.grad0(binorm, tor, gdash)
+        grad2 = self.grad0(binorm, tor, gdash)
+        
+        
+        vjp0 = self.binormstrain_vjp(
+            self.framedcurve.frame_binormal_curvature(), self.width, grad0
+        )
+        vjp1 = self.torstrain_vjp(
+            self.framedcurve.frame_torsion(), self.width, grad1
+        )
+        vjp2 = self.framedcurve.curve.dgammadash_by_dcoeff_vjp(grad2)
+
+        return self.framedcurve.dframe_binormal_curvature_by_dcoeff_vjp(vjp0) \
+             + self.framedcurve.dframe_torsion_by_dcoeff_vjp(vjp1) \
+             + vjp2
+        
+        
+    return_fn_map = {'J': J, 'dJ': dJ}
+
+
 
 
 @jit
