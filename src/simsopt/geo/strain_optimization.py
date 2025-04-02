@@ -201,8 +201,8 @@ class CoilStrain(Optimizable):
         gdash = self.framedcurve.curve.gammadash()
 
         grad0 = self.grad0(binorm, tor, gdash)
-        grad1 = self.grad0(binorm, tor, gdash)
-        grad2 = self.grad0(binorm, tor, gdash)
+        grad1 = self.grad1(binorm, tor, gdash)
+        grad2 = self.grad2(binorm, tor, gdash)
         
         
         vjp0 = self.binormstrain_vjp(
