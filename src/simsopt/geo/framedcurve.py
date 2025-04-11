@@ -545,7 +545,6 @@ class FramedCurveCentroid(FramedCurve):
             + self.rotation.dalphadash_by_dcoeff_vjp(self.curve.quadpoints, vjp5)
 
 class FrameRotation(Optimizable):
-
     def __init__(self, quadpoints, order, scale=1., dofs=None):
         """
         Defines the rotation angle with respect to a reference orthonormal 
@@ -556,16 +555,29 @@ class FrameRotation(Optimizable):
         doi:10.1017/S0022377820000756
         """
         self.order = order
-        if dofs is None:
-            super().__init__(x0=np.zeros((2*order+1, )))
-        else:
-            super().__init__(dofs=dofs)
+        # if dofs is None:
+        #     super().__init__(x0=np.zeros((2*order+1, )))
+        # else:
+        #     super().__init__(dofs=dofs)
         self.quadpoints = quadpoints
         self.scale = scale
         self.jac = rotation_dcoeff(quadpoints, order)
         self.jacdash = rotationdash_dcoeff(quadpoints, order)
         self.jax_alpha = jit(lambda dofs, points: jaxrotation_pure(dofs, points, self.order))
         self.jax_alphadash = jit(lambda dofs, points: jaxrotationdash_pure(dofs, points, self.order))
+
+        if dofs is None:
+            super().__init__(x0=np.zeros((2*order+1,)),
+                             names=self._make_names())
+        else:
+            super().__init__(dofs=dofs)
+
+    def _make_names(self):
+        names = ['alphac(0)']
+        for j in range(1, self.order+1):
+            names.append(f'alphas({j})')
+            names.append(f'alphac({j})')
+        return names
 
     def alpha(self, quadpoints):
         return self.scale * self.jax_alpha(self._dofs.full_x, quadpoints)
