@@ -11,7 +11,8 @@ from ..objectives.utilities import forward_backward
 __all__ = ['Area', 'Volume', 'ToroidalFlux', 'PrincipalCurvature',
            'QfmResidual', 'boozer_surface_residual', 'Iotas', 
            'MajorRadius', 'NonQuasiSymmetricRatio', 'BoozerResidual', 'BoozerResidualExact', 
-           'AspectRatio', 'DifferentialVolume', 'BoozerSurfaceToroidalFlux']
+           'AspectRatio', 'DifferentialVolume', 'BoozerSurfaceToroidalFlux',
+           'CurveBoozerSurfaceDistance']
 
 
 class AspectRatio(Optimizable):
@@ -1308,7 +1309,7 @@ class BoozerResidual(Optimizable):
 
 
 
-class BoozerResidualiExact(Optimizable):
+class BoozerResidualExact(Optimizable):
     r"""
     This term returns the Boozer residual penalty term
     
@@ -1628,3 +1629,156 @@ def boozer_surface_residual_dB(surface, iota, G, biotsavart, derivatives=0, weig
 
     if derivatives == 1:
         return rtil_flattened, drtil_dB_flattened, J, d2rtil_dsurfacedB, d2rtil_dsurfacedgradB
+
+
+def cbs_distance_pure(gammac, lc, gammas, ls1, ls2, minimum_distance, p):
+    """
+    This function is used in a Python+Jax implementation of the curve-surface distance
+    formula.
+    """
+    dists = jnp.sqrt(jnp.sum(
+        (gammac[:, None, :] - gammas[None, :, :])**2, axis=2))
+    integralweight = jnp.linalg.norm(lc, axis=1)[:, None] \
+        * jnp.linalg.norm(jnp.cross(ls1, ls2, axis=-1), axis=1)[None, :]
+    return jnp.mean(integralweight * jnp.maximum(minimum_distance-dists, 0)**p)
+
+
+class CurveBoozerSurfaceDistance(Optimizable):
+    r"""
+    CurveSurfaceDistance is a class that computes
+
+    .. math::
+        J = \sum_{i = 1}^{\text{num_coils}} d_{i}
+
+    where
+
+    .. math::
+        d_{i} = \int_{\text{curve}_i} \int_{surface} \max(0, d_{\min} - \| \mathbf{r}_i - \mathbf{s} \|_2)^2 ~dl_i ~ds\\
+
+    and :math:`\mathbf{r}_i`, :math:`\mathbf{s}` are points on coil :math:`i`
+    and the surface, respectively. :math:`d_\min` is a desired threshold
+    minimum coil-to-surface distance.  This penalty term is zero when the
+    points on all coils :math:`i` and on the surface lie more than
+    :math:`d_\min` away from one another.
+
+    """
+
+    def __init__(self, curves, boozer_surface, minimum_distance, p=2):
+        self.curves = curves
+        self.boozer_surface = boozer_surface
+        self.surface = boozer_surface.surface
+        self.minimum_distance = minimum_distance
+
+        self.J_jax = jit(lambda gammac, lc, gammas, ls1, ls2: cbs_distance_pure(gammac, lc, gammas, ls1, ls2, minimum_distance, p))
+        self.thisgrad0 = jit(lambda gammac, lc, gammas, ls1, ls2: grad(self.J_jax, argnums=0)(gammac, lc, gammas, ls1, ls2))
+        self.thisgrad1 = jit(lambda gammac, lc, gammas, ls1, ls2: grad(self.J_jax, argnums=1)(gammac, lc, gammas, ls1, ls2))
+        self.thisgrad2 = jit(lambda gammac, lc, gammas, ls1, ls2: grad(self.J_jax, argnums=2)(gammac, lc, gammas, ls1, ls2))
+        self.thisgrad3 = jit(lambda gammac, lc, gammas, ls1, ls2: grad(self.J_jax, argnums=3)(gammac, lc, gammas, ls1, ls2))
+        self.thisgrad4 = jit(lambda gammac, lc, gammas, ls1, ls2: grad(self.J_jax, argnums=4)(gammac, lc, gammas, ls1, ls2))
+        self.candidates = None
+        super().__init__(depends_on=curves+[boozer_surface])  # Bharat's comment: Shouldn't we add surface here
+
+    def recompute_bell(self, parent=None):
+        self.candidates = None
+
+    def compute_candidates(self):
+        if self.candidates is None:
+            candidates = sopp.get_pointclouds_closer_than_threshold_between_two_collections(
+                [c.gamma() for c in self.curves], [self.surface.gamma().reshape((-1, 3))], self.minimum_distance)
+            self.candidates = candidates
+
+    def shortest_distance_among_candidates(self):
+        self.compute_candidates()
+        from scipy.spatial.distance import cdist
+        xyz_surf = self.surface.gamma().reshape((-1, 3))
+        return min([self.minimum_distance] + [np.min(cdist(self.curves[i].gamma(), xyz_surf)) for i, _ in self.candidates])
+
+    def shortest_distance(self):
+        self.compute_candidates()
+        if len(self.candidates) > 0:
+            return self.shortest_distance_among_candidates()
+        from scipy.spatial.distance import cdist
+        xyz_surf = self.surface.gamma().reshape((-1, 3))
+        return min([np.min(cdist(self.curves[i].gamma(), xyz_surf)) for i in range(len(self.curves))])
+
+    def J(self):
+        """
+        This returns the value of the quantity.
+        """
+        if self.boozer_surface.need_to_run_code:
+            res = self.boozer_surface.res
+            res = self.boozer_surface.run_code(res['type'], res['iota'], G=res['G'])
+
+
+        self.compute_candidates()
+        res = 0
+        gammas = self.surface.gamma().reshape((-1, 3))
+        ls1 = self.surface.gammadash1().reshape((-1, 3))
+        ls2 = self.surface.gammadash2().reshape((-1, 3))
+        for i, _ in self.candidates:
+            gammac = self.curves[i].gamma()
+            lc = self.curves[i].gammadash()
+            res += self.J_jax(gammac, lc, gammas, ls1, ls2)
+        return res
+
+    @derivative_dec
+    def dJ(self):
+        """
+        This returns the derivative of the quantity with respect to the curve dofs.
+        """
+        if self.boozer_surface.need_to_run_code:
+            res = self.boozer_surface.res
+            res = self.boozer_surface.run_code(res['type'], res['iota'], G=res['G'])
+        
+        nphi = self.surface.quadpoints_phi.size
+        ntheta = self.surface.quadpoints_theta.size
+
+        # partial wrt to coils
+        self.compute_candidates()
+        dgamma_by_dcoeff_vjp_vecs = [np.zeros_like(c.gamma()) for c in self.curves]
+        dgammadash_by_dcoeff_vjp_vecs = [np.zeros_like(c.gammadash()) for c in self.curves]
+        
+        dgammas_by_dcoeff_vjp_vecs     = [np.zeros_like(self.surface.gamma()) for c in self.curves]
+        dgammadash1_by_dcoeff_vjp_vecs = [np.zeros_like(self.surface.gammadash1()) for c in self.curves]
+        dgammadash2_by_dcoeff_vjp_vecs = [np.zeros_like(self.surface.gammadash2()) for c in self.curves]
+
+        gammas = self.surface.gamma().reshape((-1, 3))
+        ls1 = self.surface.gammadash1().reshape((-1, 3))
+        ls2 = self.surface.gammadash2().reshape((-1, 3))
+        for i, _ in self.candidates:
+            gammac = self.curves[i].gamma()
+            lc = self.curves[i].gammadash()
+            dgamma_by_dcoeff_vjp_vecs[i] += self.thisgrad0(gammac, lc, gammas, ls1, ls2)
+            dgammadash_by_dcoeff_vjp_vecs[i] += self.thisgrad1(gammac, lc, gammas, ls1, ls2)
+
+            dgammas_by_dcoeff_vjp_vecs[i] += self.thisgrad2(gammac, lc, gammas, ls1, ls2).reshape((nphi, ntheta, -1))
+            dgammadash1_by_dcoeff_vjp_vecs[i] += self.thisgrad3(gammac, lc, gammas, ls1, ls2).reshape((nphi, ntheta, -1))
+            dgammadash2_by_dcoeff_vjp_vecs[i] += self.thisgrad4(gammac, lc, gammas, ls1, ls2).reshape((nphi, ntheta, -1))
+
+        res_curve = [self.curves[i].dgamma_by_dcoeff_vjp(dgamma_by_dcoeff_vjp_vecs[i]) + self.curves[i].dgammadash_by_dcoeff_vjp(dgammadash_by_dcoeff_vjp_vecs[i]) for i in range(len(self.curves))]
+        res_surface = [self.surface.dgamma_by_dcoeff_vjp(dgammas_by_dcoeff_vjp_vecs[i]) + self.surface.dgammadash1_by_dcoeff_vjp(dgammadash1_by_dcoeff_vjp_vecs[i]) + self.surface.dgammadash2_by_dcoeff_vjp(dgammadash2_by_dcoeff_vjp_vecs[i]) for i in range(len(self.curves))]
+        res_curve = sum(res_curve)
+        res_surface = sum(res_surface)
+
+        booz_surf = self.boozer_surface
+        iota = booz_surf.res['iota']
+        G = booz_surf.res['G']
+        P, L, U = booz_surf.res['PLU']
+        dconstraint_dcoils_vjp = self.boozer_surface.res['vjp']
+
+        # tack on dJ_diota = dJ_dG = 0 to the end of dJ_ds
+        dJ_ds = np.zeros(L.shape[0])
+        dj_ds = res_surface.copy()
+        dJ_ds[:dj_ds.size] = dj_ds
+        adj = forward_backward(P, L, U, dJ_ds)
+
+        adj_times_dg_dcoil = dconstraint_dcoils_vjp(adj, booz_surf, iota, G)
+        res = res_curve -1 * adj_times_dg_dcoil
+
+        return res
+
+    return_fn_map = {'J': J, 'dJ': dJ}
+
+
+
+
