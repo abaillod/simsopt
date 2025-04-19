@@ -7,6 +7,9 @@ from .._core.types import RealArray
 from .surface import Surface
 from .surfacexyztensorfourier import SurfaceXYZTensorFourier
 from ..objectives.utilities import forward_backward
+from .jit import jit
+import jax.numpy as jnp
+from jax import grad
 
 __all__ = ['Area', 'Volume', 'ToroidalFlux', 'PrincipalCurvature',
            'QfmResidual', 'boozer_surface_residual', 'Iotas', 
@@ -1707,7 +1710,7 @@ class CurveBoozerSurfaceDistance(Optimizable):
         """
         if self.boozer_surface.need_to_run_code:
             res = self.boozer_surface.res
-            res = self.boozer_surface.run_code(res['type'], res['iota'], G=res['G'])
+            res = self.boozer_surface.run_code(res['iota'], res['G'])
 
 
         self.compute_candidates()
@@ -1728,7 +1731,7 @@ class CurveBoozerSurfaceDistance(Optimizable):
         """
         if self.boozer_surface.need_to_run_code:
             res = self.boozer_surface.res
-            res = self.boozer_surface.run_code(res['type'], res['iota'], G=res['G'])
+            res = self.boozer_surface.run_code(res['iota'], res['G'])
         
         nphi = self.surface.quadpoints_phi.size
         ntheta = self.surface.quadpoints_theta.size
