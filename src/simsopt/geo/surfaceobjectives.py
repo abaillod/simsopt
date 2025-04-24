@@ -887,16 +887,16 @@ class BoozerSurfaceToroidalFlux(Optimizable):
     This objective is the same as ToroidalFlux, excepted that it depends only on a BoozerSurface object --- dependencies w.r.t the surface dofs are absorbed by the coils dofs.
     """
 
-    def __init__(self, boozer_surface, idx=0, range=None, nphi=None, ntheta=None):
+    def __init__(self, boozer_surface, biotsavart, idx=0, range=None, nphi=None, ntheta=None):
         self.boozer_surface = boozer_surface
         self.surface = self.boozer_surface.surface
-        self.biotsavart = self.boozer_surface.biotsavart
+        self.biotsavart = biotsavart
         self.idx = idx
         self.range = range
         self.nphi = nphi
         self.ntheta = ntheta
 
-        super().__init__(depends_on=[boozer_surface])
+        super().__init__(depends_on=[boozer_surface, biotsavart])
 
     def recompute_bell(self, parent=None):
         self.invalidate_cache()
